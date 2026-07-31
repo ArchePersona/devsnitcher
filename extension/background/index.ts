@@ -4,17 +4,16 @@ import { captureScreenshot } from '../../collectors/screenshot';
 import type { Evidence, SnitchMessage } from '../../shared/types';
 
 chrome.runtime.onMessage.addListener(
-  (msg: SnitchMessage, sender, sendResponse) => {
+  (msg: SnitchMessage, _sender, sendResponse) => {
     if (msg?.type !== 'SNITCH') return false;
 
     (async () => {
       try {
-        const tabId = sender.tab?.id;
-        if (!tabId) throw new Error('No active tab');
+        const tab = await getActiveTab();
 
-        const evidence = await collectEvidence(tabId);
+        const evidence = await collectEvidence(tab.id!);
         const screenshot = msg.screenshot
-          ? await captureScreenshot(sender.tab?.windowId)
+          ? await captureScreenshot(tab.windowId)
           : null;
         evidence.screenshot = screenshot;
 
@@ -40,6 +39,34 @@ chrome.runtime.onMessage.addListener(
     return true;
   },
 );
+
+async function getActiveTab(): Promise<chrome.tabs.Tab> {
+  const tabs = await chrome.tabs.query({
+    active: true,
+    currentWindow: true,
+  });
+
+  const tab = tabs[0];
+
+  if (!tab?.id) {
+    throw new Error('No active tab found. Open a normal browser tab and try again.');
+  }
+
+  if (!tab.url) {
+    throw new Error('Active tab has no URL.');
+  }
+
+  if (
+    tab.url.startsWith('chrome://') ||
+    tab.url.startsWith('chrome-extension://') ||
+    tab.url.startsWith('edge://') ||
+    tab.url.startsWith('about:')
+  ) {
+    throw new Error('DEVSnitcher cannot inspect browser-internal pages.');
+  }
+
+  return tab;
+}
 
 async function collectEvidence(tabId: number): Promise<Evidence> {
   return new Promise((resolve, reject) => {
