@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>DEVSnitcher Test Page</title>
+  <style>
+    body { font-family: sans-serif; padding: 2rem; background: #1a1a2e; color: #eee; }
+    h1 { color: #ff3b3b; }
+    button { margin: 0.5rem 0; padding: 0.75rem 1.5rem; font-size: 1rem; cursor: pointer; background: #16213e; color: #eee; border: 1px solid #0f3460; border-radius: 6px; }
+    button:hover { background: #0f3460; }
+    section { margin-bottom: 2rem; padding: 1rem; border: 1px solid #333; border-radius: 8px; }
+    .ok { color: #3ddc84; }
+  </style>
+</head>
+<body>
+  <h1>DEV<span style="color:#eee">Snitcher</span> Test Page</h1>
+  <p>Open the extension popup and press <strong>SNITCH</strong> after triggering errors below.</p>
+
+  <section>
+    <h2>1. Console Errors</h2>
+    <button onclick="console.warn('DEVSnitcher test: deprecation warning')">Warn</button>
+    <button onclick="console.error('DEVSnitcher test: database connection failed', { db: 'prod', errCode: 5001 })">Error</button>
+  </section>
+
+  <section>
+    <h2>2. Failed Network Requests</h2>
+    <button onclick="fetch('/api/missing-endpoint').then(r => r.json())">Break Network (404)</button>
+    <button onclick="fetch('https://httpbin.org/status/500').then(r => r.json())">Break Network (500)</button>
+  </section>
+
+  <section>
+    <h2>3. Unhandled Exceptions</h2>
+    <button onclick="throw new Error('DEVSnitcher test: unhandled exception')">Throw Error</button>
+    <button onclick="Promise.reject(new Error('DEVSnitcher test: unhandled promise rejection'))">Reject Promise</button>
+  </section>
+
+  <section>
+    <h2>4. DOM Selection</h2>
+    <p class="test-element highlight" data-testid="select-me">Select this paragraph, then click SNITCH to see DOM context.</p>
+  </section>
+
+  <section>
+    <h2>5. Sensitive Data (Redaction Test)</h2>
+    <p>Fetch with auth header:</p>
+    <button id="auth-test">Fetch with Bearer Token</button>
+    <script>
+      document.getElementById('auth-test').addEventListener('click', () => {
+        fetch('/api/authenticated', {
+          headers: { Authorization: 'Bearer sk-1234567890abcdef' }
+        });
+      });
+    </script>
+  </section>
+</body>
+</html>

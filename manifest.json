@@ -1,0 +1,35 @@
+﻿{
+  "manifest_version": 3,
+  "name": "DEVSnitcher",
+  "version": "1.0.0",
+  "description": "Press SNITCH. Paste into AI. Captures browser evidence into an AI-ready report.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "DEVSnitcher — Press SNITCH. Paste into AI."
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["page-script.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "permissions": ["activeTab", "scripting", "clipboardWrite", "tabs"],
+  "host_permissions": ["<all_urls>"]
+}

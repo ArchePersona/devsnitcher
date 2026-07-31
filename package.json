@@ -1,0 +1,23 @@
+{
+  "name": "devsnitcher",
+  "version": "1.0.0",
+  "description": "Press SNITCH. Paste into AI.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/build.js --watch",
+    "build": "node scripts/build.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint extension collectors redaction report shared --ext .ts",
+    "lint:fix": "eslint extension collectors redaction report shared --ext .ts --fix"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.272",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0",
+    "eslint": "^9.2.0",
+    "eslint-config-prettier": "^9.1.0",
+    "typescript-eslint": "^8.20.0"
+  }
+}
