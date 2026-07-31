@@ -3,8 +3,11 @@ import type { NetworkEntry } from '../shared/types';
 const entries: NetworkEntry[] = [];
 const MAX_ENTRIES = 100;
 const PREVIEW_MAX = 1000;
+let started = false;
 
 export function startNetworkCollector(): void {
+  if (started) return;
+  started = true;
   wrapFetch();
   wrapXhr();
 }
@@ -15,6 +18,7 @@ export function collectNetwork(): NetworkEntry[] {
 
 export function resetNetwork(): void {
   entries.length = 0;
+  started = false;
 }
 
 function wrapFetch(): void {

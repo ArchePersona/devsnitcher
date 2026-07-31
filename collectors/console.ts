@@ -3,10 +3,13 @@ import type { ConsoleEntry, ConsoleLevel } from '../shared/types';
 const entries: ConsoleEntry[] = [];
 const MAX_ENTRIES = 200;
 const original: Partial<Record<ConsoleLevel, (...a: unknown[]) => void>> = {};
+let started = false;
 
 const LEVELS: ConsoleLevel[] = ['log', 'info', 'warn', 'error', 'debug'];
 
 export function startConsoleCollector(): void {
+  if (started) return;
+  started = true;
   for (const level of LEVELS) {
     const fn = console[level] ? console[level].bind(console) : undefined;
     if (!fn) continue;

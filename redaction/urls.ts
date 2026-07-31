@@ -39,13 +39,25 @@ export function redactUrl(input: string): RedactedUrl {
     for (const [name, value] of params.entries()) {
       if (SENSITIVE_QUERY_PARAMS.has(name.toLowerCase())) {
         query[name] = REDACTED;
-        params.set(name, REDACTED);
         modified = true;
       } else {
         query[name] = value;
       }
     }
-    const out = modified ? url.origin + url.pathname + '?' + params.toString() + url.hash : input;
+    let out: string;
+    if (modified) {
+      const qs = Array.from(params.entries())
+        .map(([name, value]) => {
+          const safeValue = SENSITIVE_QUERY_PARAMS.has(name.toLowerCase())
+            ? REDACTED
+            : encodeURIComponent(value);
+          return `${encodeURIComponent(name)}=${safeValue}`;
+        })
+        .join('&');
+      out = url.origin + url.pathname + (qs ? '?' + qs : '') + url.hash;
+    } else {
+      out = input;
+    }
     return { url: out, query };
   } catch {
     return { url: input, query: {} };

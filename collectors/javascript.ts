@@ -2,8 +2,11 @@ import type { JsErrorEntry } from '../shared/types';
 
 const entries: JsErrorEntry[] = [];
 const MAX_ENTRIES = 50;
+let started = false;
 
 export function startJavaScriptCollector(): void {
+  if (started) return;
+  started = true;
   window.addEventListener('error', onError, true);
   window.addEventListener('unhandledrejection', onRejection, true);
 }
@@ -14,6 +17,7 @@ export function collectJavaScript(): JsErrorEntry[] {
 
 export function resetJavaScript(): void {
   entries.length = 0;
+  started = false;
 }
 
 function onError(ev: ErrorEvent): void {

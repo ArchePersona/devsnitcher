@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.local
+*.test.cjs
 .DS_Store
 .idea
 .vscode

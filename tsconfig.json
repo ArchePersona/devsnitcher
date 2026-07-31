@@ -20,7 +20,8 @@
     "collectors/**/*.ts",
     "redaction/**/*.ts",
     "report/**/*.ts",
-    "extension/**/*.ts"
+    "extension/**/*.ts",
+    "tests/**/*.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }
