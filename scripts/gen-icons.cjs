@@ -1,5 +1,5 @@
 // Generates the DEVSnitcher extension icons as PNGs with zero dependencies.
-// Design: dark navy rounded square + red alert triangle with a white "!".
+// Design: dark navy rounded square + huge red exclamation mark with a white lens dot accent.
 // Usage: node scripts/gen-icons.cjs
 const zlib = require('node:zlib');
 const fs = require('node:fs');
@@ -70,46 +70,27 @@ function sdRoundRect(px, py, cx, cy, hw, hh, r) {
   return Math.hypot(ox, oy) + Math.min(Math.max(qx, qy), 0) - r;
 }
 
-function sign(px, py, a, b) {
-  return (px - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (py - b[1]);
-}
-
-function inTriangle(px, py, a, b, c) {
-  const d1 = sign(px, py, a, b);
-  const d2 = sign(px, py, b, c);
-  const d3 = sign(px, py, c, a);
-  const hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
-  const hasPos = d1 > 0 || d2 > 0 || d3 > 0;
-  return !(hasNeg && hasPos);
-}
-
 function inCircle(px, py, cx, cy, r) {
   const dx = px - cx;
   const dy = py - cy;
   return dx * dx + dy * dy <= r * r;
 }
 
-// Background rounded square
+// Background rounded square (fills the canvas, minimal padding)
 function sampleBg(px, py) {
-  const d = sdRoundRect(px, py, 0.5, 0.5, 0.5, 0.5, 0.22);
+  const d = sdRoundRect(px, py, 0.5, 0.5, 0.5, 0.5, 0.2);
   return d <= 0 ? NAVY : null;
 }
 
-// Upward red alert triangle + white exclamation
+// Huge red exclamation mark: bold vertical bar + base dot, with a white lens dot accent
 function sampleGlyph(px, py) {
-  const apex = [0.5, 0.24];
-  const bl = [0.3, 0.76];
-  const br = [0.7, 0.76];
-  if (!inTriangle(px, py, apex, bl, br)) return null;
-
-  // exclamation bar
-  const inBar = px >= 0.47 && px <= 0.53 && py >= 0.36 && py <= 0.58;
-  if (inBar) return WHITE;
-
-  // exclamation dot
-  if (inCircle(px, py, 0.5, 0.665, 0.035)) return WHITE;
-
-  return RED;
+  const bar = sdRoundRect(px, py, 0.5, 0.4, 0.15, 0.24, 0.06);
+  if (bar <= 0) {
+    if (inCircle(px, py, 0.5, 0.4, 0.055)) return WHITE;
+    return RED;
+  }
+  if (inCircle(px, py, 0.5, 0.795, 0.13)) return RED;
+  return null;
 }
 
 function sampleColor(px, py) {

@@ -1,5 +1,5 @@
 import { build, context } from 'esbuild';
-import { copyFileSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,11 +40,11 @@ function ensureDist() {
   if (!existsSync(distDir)) mkdirSync(distDir, { recursive: true });
   const iconsSrc = join(root, 'icons');
   const iconsDst = join(distDir, 'icons');
-  if (existsSync(iconsSrc) && !existsSync(iconsDst)) {
-    mkdirSync(iconsDst, { recursive: true });
-    for (const f of readdirSync(iconsSrc)) {
-      copyFileSync(join(iconsSrc, f), join(iconsDst, f));
+  if (existsSync(iconsSrc)) {
+    if (existsSync(iconsDst)) {
+      rmSync(iconsDst, { recursive: true, force: true });
     }
+    cpSync(iconsSrc, iconsDst, { recursive: true });
   }
 }
 
