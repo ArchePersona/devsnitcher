@@ -8,6 +8,20 @@ There is no DEVSnitcher cloud service in the v0.x extension.
 
 ---
 
+## What DEVSnitcher does not do
+
+- No DEVSnitcher account
+- No DEVSnitcher backend
+- No cloud upload
+- No telemetry by default
+- No AI service calls
+- No AI vendor lock-in
+- No background monitoring
+
+Evidence stays in the browser unless the user pastes the report somewhere.
+
+---
+
 ## What leaves the browser?
 
 Nothing leaves the browser automatically.

@@ -71,7 +71,7 @@ Validated so far:
 
 - TypeScript compile: passing
 - ESLint: passing
-- Tests: passing
+- Tests: 24/24 passing
 - Build: passing
 - Manual browser proof: Chrome/Chromium flow validated on localhost
 - Microsoft Edge compatibility: validated through Chromium extension flow
@@ -81,7 +81,34 @@ Current tags:
 ```text
 devsnitcher-v0.1-snitch-button
 devsnitcher-v0.1-browser-proof
+devsnitcher-v0.1.1-target-icon
 ```
+
+Current locked release: `devsnitcher-v0.1.1-target-icon`
+
+---
+
+## Release checkpoints
+
+```text
+v0.1 snitch-button    Press SNITCH. Paste into AI.
+v0.1 browser-proof    Content-script injection and evidence collection verified in a real browser.
+v0.1.1 target-icon    Release icon + build fixes.
+```
+
+Each tag is a checkpoint on the v0.1.1 line.
+
+---
+
+## Icon
+
+The DEVSnitcher icon is a dark navy square with a red target mark.
+
+- Dark navy square
+- Red target ring
+- Red center dot
+
+The icon is generated locally by `scripts/gen-icons.cjs` during the build. No icon images are committed to the repository.
 
 ---
 

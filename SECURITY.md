@@ -45,9 +45,7 @@ Browser debugging evidence can contain secrets, including:
 - Request bodies
 - Stack traces with internal paths
 
-DEVSnitcher attempts to redact obvious sensitive values. Redaction is best effort, not a guarantee.
-
-Always review reports before sharing them.
+DEVSnitcher performs best-effort redaction for obvious secrets such as authorization headers, bearer tokens, cookies, passwords, and API-key-like values. Users should still review reports before pasting them into an AI chat, issue tracker, or shared channel.
 
 ---
 

@@ -217,7 +217,7 @@ Those may be separate products later. They do not belong in the core v0.x extens
 ## Stability rules
 
 1. Prefer lazy injection over tab-wide eager injection.
-2. Avoid injecting on every tab update.
+2. Do not inject on every tab update. The tab-update injection path was removed in v0.1.1 in favor of the PING/PONG handshake with lazy fallback injection.
 3. Keep one clear evidence request path.
 4. Guard against double-injection.
 5. Keep report output deterministic.

@@ -13,19 +13,19 @@ The manual browser proof proves the actual extension flow works inside Chrome or
 Run from the repo root:
 
 ```powershell
+npm run build
 npm run typecheck
 npm run lint
 npm test
-npm run build
 ```
 
 Expected result:
 
 ```text
+Build: dist/ generated
 TypeScript: 0 errors
 ESLint: 0 errors
-Tests: passing
-Build: dist/ generated
+Tests: 24/24 passing
 ```
 
 ---
@@ -154,10 +154,10 @@ If the AI still has to ask for basic DevTools evidence, the report is not good e
 Before tagging a release:
 
 ```powershell
+npm run build
 npm run typecheck
 npm run lint
 npm test
-npm run build
 ```
 
 Then complete manual browser proof in at least one Chromium browser.
