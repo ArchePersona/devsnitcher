@@ -67,6 +67,8 @@ function replacer(_key: string, value: unknown): unknown {
 function captureStack(): string | undefined {
   const err = new Error();
   const stack = err.stack ?? '';
-  const lines = stack.split('\n').filter((l) => !/console\.(warn|error)/.test(l));
+  const lines = stack
+    .split('\n')
+    .filter((l) => !/at\s+(?:console|Object)\.(?:warn|error)(?:\s|\()/.test(l));
   return lines.slice(1, 6).join('\n') || undefined;
 }

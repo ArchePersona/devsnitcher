@@ -1,11 +1,15 @@
 import { redactHeaders } from './headers';
 import { redactCookieString } from './cookies';
 import { redactTokens } from './tokens';
-import { redactUrl } from './urls';
+import { redactUrl, redactUrlsInText } from './urls';
 import type { Evidence, NetworkEntry, ConsoleEntry, JsErrorEntry, DomContext } from '../shared/types';
 
 export function redactText(text: string): string {
-  return redactTokens(redactUrl(text).url);
+  return redactTokens(redactUrlsInText(text));
+}
+
+function redactStack(stack: string): string {
+  return redactTokens(redactUrlsInText(stack));
 }
 
 export function redactNetworkEntry(entry: NetworkEntry): NetworkEntry {
@@ -13,7 +17,7 @@ export function redactNetworkEntry(entry: NetworkEntry): NetworkEntry {
     ...entry,
     url: redactUrl(entry.url).url,
     requestHeaders: redactHeaders(entry.requestHeaders),
-    responsePreview: redactTokens(redactUrl(entry.responsePreview).url),
+    responsePreview: redactTokens(redactUrlsInText(entry.responsePreview)),
   };
 }
 
@@ -21,7 +25,7 @@ export function redactConsoleEntry(entry: ConsoleEntry): ConsoleEntry {
   return {
     ...entry,
     message: redactTokens(entry.message),
-    stack: entry.stack ? redactUrl(entry.stack).url : undefined,
+    stack: entry.stack ? redactStack(entry.stack) : undefined,
   };
 }
 
@@ -29,7 +33,7 @@ export function redactJsErrorEntry(entry: JsErrorEntry): JsErrorEntry {
   return {
     ...entry,
     message: redactTokens(entry.message),
-    stack: entry.stack ? redactUrl(entry.stack).url : entry.stack,
+    stack: entry.stack ? redactStack(entry.stack) : entry.stack,
   };
 }
 
@@ -51,4 +55,4 @@ export function redactEvidence(evidence: Evidence): Evidence {
   };
 }
 
-export { redactHeaders, redactCookieString, redactTokens, redactUrl };
+export { redactHeaders, redactCookieString, redactTokens, redactUrl, redactUrlsInText };

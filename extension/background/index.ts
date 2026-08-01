@@ -111,7 +111,9 @@ async function ensureContentScript(tabId: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
-  throw new Error('DEVSnitcher could not attach to this tab. Refresh the page and try again.');
+  throw new Error(
+    'DEVSnitcher could not attach to this tab. The page may enforce a CSP that blocks injection, or the tab was opened before the extension was installed. Refresh the page and try again.',
+  );
 }
 
 async function collectEvidence(tabId: number): Promise<Evidence> {

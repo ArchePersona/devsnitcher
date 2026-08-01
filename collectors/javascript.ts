@@ -6,6 +6,7 @@ let started = false;
 
 export function startJavaScriptCollector(): void {
   if (started) return;
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
   started = true;
   window.addEventListener('error', onError, true);
   window.addEventListener('unhandledrejection', onRejection, true);

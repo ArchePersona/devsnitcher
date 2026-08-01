@@ -7,6 +7,7 @@ let started = false;
 
 export function startNetworkCollector(): void {
   if (started) return;
+  if (typeof window === 'undefined') return;
   started = true;
   wrapFetch();
   wrapXhr();

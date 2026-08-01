@@ -17,22 +17,21 @@ export function collectDom(selection: Element | null): DomContext | null {
 }
 
 function buildSelector(el: Element): string {
-  if (el.id) return `#${el.id}`;
   const parts: string[] = [];
   let cur: Element | null = el;
   while (cur && cur.nodeType === 1) {
-    let sel = cur.tagName.toLowerCase();
     if (cur.id) {
       parts.unshift(`#${cur.id}`);
       break;
     }
+    let sel = cur.tagName.toLowerCase();
     const parent: Element | null = cur.parentElement;
     if (parent) {
       const children = Array.from(parent.children) as Element[];
       const same = children.filter((c) => c.tagName === cur!.tagName);
-      if (same.length > 1) {
-        const idx = same.indexOf(cur) + 1;
-        sel += `:nth-of-type(${idx})`;
+      const idx = same.indexOf(cur);
+      if (same.length > 1 && idx > -1) {
+        sel += `:nth-of-type(${idx + 1})`;
       }
     }
     parts.unshift(sel);

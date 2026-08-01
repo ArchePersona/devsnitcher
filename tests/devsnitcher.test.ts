@@ -49,6 +49,16 @@ setGlobal('chrome', {
   runtime: {},
 } as any);
 
+// Mock createImageBitmap for screenshot dimension decoding
+setGlobal(
+  'createImageBitmap',
+  (async () => ({
+    width: 1280,
+    height: 720,
+    close() {},
+  })) as any,
+);
+
 // Now import collectors and report modules
 import { collectEnvironment } from '../collectors/environment';
 import { startConsoleCollector, collectConsole, resetConsole } from '../collectors/console';
@@ -56,7 +66,7 @@ import { startNetworkCollector, collectNetwork, resetNetwork } from '../collecto
 import { startJavaScriptCollector, collectJavaScript, resetJavaScript } from '../collectors/javascript';
 import { collectDom } from '../collectors/dom';
 import { captureScreenshot } from '../collectors/screenshot';
-import { redactEvidence } from '../redaction/index';
+import { redactEvidence, redactCookieString } from '../redaction/index';
 import { buildMarkdownReport } from '../report/markdown';
 import { buildJsonReport } from '../report/json';
 import type { Evidence, NetworkEntry } from '../shared/types';
@@ -209,6 +219,47 @@ describe('DEVSnitcher collectors', () => {
       assert.ok(ctx);
       assert.ok(ctx!.selector.length > 0);
     });
+
+    test('builds unique selectors for siblings under an ID ancestor', () => {
+      const container = window.document.createElement('div');
+      container.id = 'menu';
+      const a = window.document.createElement('div');
+      const b = window.document.createElement('div');
+      const c = window.document.createElement('div');
+      a.className = 'item';
+      b.className = 'item';
+      c.className = 'item';
+      container.appendChild(a);
+      container.appendChild(b);
+      container.appendChild(c);
+      window.document.body.appendChild(container);
+
+      const sa = collectDom(a)!.selector;
+      const sb = collectDom(b)!.selector;
+      const sc = collectDom(c)!.selector;
+      assert.equal(sa, '#menu > div:nth-of-type(1)');
+      assert.equal(sb, '#menu > div:nth-of-type(2)');
+      assert.equal(sc, '#menu > div:nth-of-type(3)');
+      assert.notEqual(sa, sb);
+      assert.notEqual(sb, sc);
+    });
+
+    test('builds unique selectors for nested elements of the same tag', () => {
+      const outer = window.document.createElement('section');
+      const inner = window.document.createElement('div');
+      const p1 = window.document.createElement('p');
+      const p2 = window.document.createElement('p');
+      inner.appendChild(p1);
+      inner.appendChild(p2);
+      outer.appendChild(inner);
+      window.document.body.appendChild(outer);
+
+      const s1 = collectDom(p1)!.selector;
+      const s2 = collectDom(p2)!.selector;
+      assert.ok(s1.includes('p:nth-of-type(1)'));
+      assert.ok(s2.includes('p:nth-of-type(2)'));
+      assert.notEqual(s1, s2);
+    });
   });
 
   describe('screenshot', () => {
@@ -216,6 +267,13 @@ describe('DEVSnitcher collectors', () => {
       const result = await captureScreenshot();
       assert.ok(result);
       assert.ok(result?.dataUrl.startsWith('data:image/'));
+    });
+
+    test('populates width and height from decoded image', async () => {
+      const result = await captureScreenshot();
+      assert.ok(result);
+      assert.equal(result?.width, 1280);
+      assert.equal(result?.height, 720);
     });
   });
 });
@@ -306,6 +364,57 @@ describe('redaction', () => {
     assert.equal(redacted.console[0].message, 'User clicked button');
     assert.equal(redacted.network[0].url, 'https://api.example.com/users?page=2');
     assert.equal(redacted.network[0].responsePreview, '{"id": 1, "name": "Alice"}');
+  });
+
+  test('redacts bearer tokens and URL query tokens in stack traces', () => {
+    const redacted = redactEvidence({
+      ...evidence,
+      console: [
+        {
+          level: 'error',
+          message: 'boom',
+          timestamp: 100,
+          stack: 'Error: boom\n    at fetch (https://api.example.com/data?token=sk-1234567890abcdef:10:5)\n    at getData (app.js:20:10)',
+        },
+      ],
+      jsErrors: [
+        {
+          type: 'unhandled_exception' as const,
+          message: 'boom',
+          stack: 'Error: boom\n    at api (https://api.example.com/auth?access_token=abc123secret:1:1)',
+        },
+      ],
+    });
+
+    assert.ok(redacted.console[0].stack);
+    assert.ok(!redacted.console[0].stack!.includes('sk-1234567890abcdef'));
+    assert.ok(!redacted.jsErrors[0].stack!.includes('abc123secret'));
+    assert.ok(redacted.console[0].stack!.includes('[REDACTED]'));
+    assert.ok(redacted.jsErrors[0].stack!.includes('[REDACTED]'));
+  });
+
+  test('redacts tokens inside URLs embedded in response previews', () => {
+    const redacted = redactEvidence({
+      ...evidence,
+      network: [
+        {
+          ...evidence.network[0],
+          responsePreview:
+            '{"url": "https://api.example.com/data?token=sk-secret789", "msg": "ok"}',
+        },
+      ],
+    });
+
+    assert.ok(!redacted.network[0].responsePreview.includes('sk-secret789'));
+    assert.ok(redacted.network[0].responsePreview.includes('[REDACTED]'));
+  });
+
+  test('redactCookieString redacts sensitive cookies but keeps benign ones', () => {
+    const result = redactCookieString('session=abc123; theme=dark; jwt=eyJhbGc; lang=en');
+    assert.ok(result.includes('session=[REDACTED]'));
+    assert.ok(result.includes('jwt=[REDACTED]'));
+    assert.ok(result.includes('theme=dark'));
+    assert.ok(result.includes('lang=en'));
   });
 });
 
