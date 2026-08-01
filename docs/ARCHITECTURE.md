@@ -224,3 +224,29 @@ Those may be separate products later. They do not belong in the core v0.x extens
 6. Keep redaction pure and testable.
 7. Keep collectors small.
 8. Keep the popup simple.
+
+---
+
+## Ecosystem Note
+
+DEVSnitcher is intentionally standalone.
+
+It may later export into SHERLOCK-style evidence workflows, but v0.1.x has no backend, no SHERLOCK dependency, and no external upload path.
+
+DEVSnitcher captures one browser debugging moment.
+
+SHERLOCK is designed for deeper evidence reconstruction across files, conversations, timelines, source artifacts, provenance, and investigation reports.
+
+SHERLOCK is currently part of a hackathon build and is also the commercial support path for the broader evidence-first work.
+
+Shared principle:
+
+```text
+Evidence first. AI second.
+```
+
+Learn more:
+
+```text
+https://sherlock-xprize.web.app
+```
