@@ -69,3 +69,5 @@ Press SNITCH. Paste into AI.
 devsnitcher-v0.1-snitch-button
 devsnitcher-v0.1-browser-proof
 ```
+
+For the broader evidence-first project, see SHERLOCK: https://sherlock-xprize.web.app

@@ -83,3 +83,19 @@ Please report issues such as:
 ## Non-security bugs
 
 Use normal GitHub issues for regular bugs, UI polish, documentation fixes, or feature requests.
+
+---
+
+## Evidence First. AI Second.
+
+DEVSnitcher is intentionally standalone: local browser evidence capture, one SNITCH report, no backend, no telemetry, no AI calls.
+
+For deeper evidence reconstruction, the same principle continues in **SHERLOCK**: files, conversations, timelines, source artifacts, provenance, and investigation reports.
+
+DEVSnitcher does not require SHERLOCK.
+
+If DEVSnitcher helps you, please consider supporting the bootstrapped founder by checking out SHERLOCK:
+
+```text
+https://sherlock-xprize.web.app
+```

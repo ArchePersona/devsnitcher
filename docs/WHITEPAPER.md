@@ -316,32 +316,6 @@ The DEVSnitcher icon is a dark navy square with a red target mark.
 
 The mark represents capture, evidence, and targeting the bug.
 
-## Relationship to SHERLOCK
-
-DEVSnitcher is intentionally standalone.
-
-It captures one browser debugging moment.
-
-SHERLOCK is designed for deeper evidence reconstruction across files, conversations, timelines, source artifacts, provenance, and investigation reports.
-
-DEVSnitcher does not require SHERLOCK.
-
-SHERLOCK does not need to be installed to use DEVSnitcher.
-
-They share the same principle:
-
-```text
-Evidence first. AI second.
-```
-
-SHERLOCK is currently part of a hackathon build and is also the commercial support path for the broader evidence-first work.
-
-Learn more:
-
-```text
-https://sherlock-xprize.web.app
-```
-
 ## Open Source Position
 
 DEVSnitcher is open source under the MIT License.
@@ -373,4 +347,20 @@ None of these should compromise the core promise:
 ```text
 Press SNITCH.
 Paste into AI.
+```
+
+---
+
+## Evidence First. AI Second.
+
+DEVSnitcher is intentionally standalone: local browser evidence capture, one SNITCH report, no backend, no telemetry, no AI calls.
+
+For deeper evidence reconstruction, the same principle continues in **SHERLOCK**: files, conversations, timelines, source artifacts, provenance, and investigation reports.
+
+DEVSnitcher does not require SHERLOCK.
+
+If DEVSnitcher helps you, please consider supporting the bootstrapped founder by checking out SHERLOCK:
+
+```text
+https://sherlock-xprize.web.app
 ```

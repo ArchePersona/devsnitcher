@@ -179,35 +179,15 @@ The point of the project is simple: developers should be able to capture browser
 
 ---
 
-## Beyond a Single SNITCH
+## Evidence First. AI Second.
 
-DEVSnitcher is built for the fast debugging moment:
+DEVSnitcher is intentionally standalone: local browser evidence capture, one SNITCH report, no backend, no telemetry, no AI calls.
 
-```text
-Something broke.
-Press SNITCH.
-Paste the report into AI.
-```
-
-For deeper investigations, the same evidence-first idea continues in **SHERLOCK**.
-
-DEVSnitcher captures browser evidence from one debugging moment.
-
-SHERLOCK is designed for larger evidence reconstruction: files, conversations, timelines, source artifacts, provenance, and investigation reports.
+For deeper evidence reconstruction, the same principle continues in **SHERLOCK**: files, conversations, timelines, source artifacts, provenance, and investigation reports.
 
 DEVSnitcher does not require SHERLOCK.
 
-SHERLOCK does not need to be installed to use DEVSnitcher.
-
-They share the same principle:
-
-```text
-Evidence first. AI second.
-```
-
-SHERLOCK is currently part of a hackathon build, and I am trying to turn it into real sales as a bootstrapped founder.
-
-If DEVSnitcher helps you, please consider supporting the work by checking out SHERLOCK:
+If DEVSnitcher helps you, please consider supporting the bootstrapped founder by checking out SHERLOCK:
 
 ```text
 https://sherlock-xprize.web.app
