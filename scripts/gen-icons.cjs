@@ -1,5 +1,5 @@
 // Generates the DEVSnitcher extension icons as PNGs with zero dependencies.
-// Design: dark navy rounded square + huge red exclamation mark with a white lens dot accent.
+// Design: dark navy rounded square + bold red target mark (thick ring + solid center dot).
 // Usage: node scripts/gen-icons.cjs
 const zlib = require('node:zlib');
 const fs = require('node:fs');
@@ -60,7 +60,6 @@ function encodePng(width, height, rgba) {
 
 const NAVY = [22, 33, 62]; // #16213e
 const RED = [255, 59, 59]; // #ff3b3b
-const WHITE = [255, 255, 255];
 
 function sdRoundRect(px, py, cx, cy, hw, hh, r) {
   const qx = Math.abs(px - cx) - (hw - r);
@@ -70,26 +69,17 @@ function sdRoundRect(px, py, cx, cy, hw, hh, r) {
   return Math.hypot(ox, oy) + Math.min(Math.max(qx, qy), 0) - r;
 }
 
-function inCircle(px, py, cx, cy, r) {
-  const dx = px - cx;
-  const dy = py - cy;
-  return dx * dx + dy * dy <= r * r;
-}
-
 // Background rounded square (fills the canvas, minimal padding)
 function sampleBg(px, py) {
   const d = sdRoundRect(px, py, 0.5, 0.5, 0.5, 0.5, 0.2);
   return d <= 0 ? NAVY : null;
 }
 
-// Huge red exclamation mark: bold vertical bar + base dot, with a white lens dot accent
+// Bold red target mark: thick outer ring + solid center dot
 function sampleGlyph(px, py) {
-  const bar = sdRoundRect(px, py, 0.5, 0.4, 0.15, 0.24, 0.06);
-  if (bar <= 0) {
-    if (inCircle(px, py, 0.5, 0.4, 0.055)) return WHITE;
-    return RED;
-  }
-  if (inCircle(px, py, 0.5, 0.795, 0.13)) return RED;
+  const d = Math.hypot(px - 0.5, py - 0.5);
+  if (d <= 0.12) return RED; // center dot
+  if (d >= 0.23 && d <= 0.36) return RED; // ring
   return null;
 }
 
