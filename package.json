@@ -19,8 +19,10 @@
     "esbuild": "^0.25.0",
     "eslint": "^9.2.0",
     "eslint-config-prettier": "^9.1.0",
+    "http-server": "^14.1.1",
     "jsdom": "^30.0.1",
     "typescript": "^5.7.0",
-    "typescript-eslint": "^8.20.0"
+    "typescript-eslint": "^8.20.0",
+    "ws": "^8.21.1"
   }
 }

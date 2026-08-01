@@ -9,7 +9,9 @@ chrome.runtime.onMessage.addListener(
 
     (async () => {
       try {
-        const tab = await getActiveTab();
+        const tab = getTabFromSender(_sender) ?? (await getActiveTab());
+
+        await ensureContentScript(tab.id!);
 
         const evidence = await collectEvidence(tab.id!);
         const screenshot = msg.screenshot
@@ -40,6 +42,22 @@ chrome.runtime.onMessage.addListener(
   },
 );
 
+function getTabFromSender(sender?: chrome.runtime.MessageSender): chrome.tabs.Tab | undefined {
+  if (sender?.tab?.id && sender.tab.url) {
+    const url = sender.tab.url;
+    if (
+      url.startsWith('chrome://') ||
+      url.startsWith('chrome-extension://') ||
+      url.startsWith('edge://') ||
+      url.startsWith('about:')
+    ) {
+      return undefined;
+    }
+    return sender.tab;
+  }
+  return undefined;
+}
+
 async function getActiveTab(): Promise<chrome.tabs.Tab> {
   const tabs = await chrome.tabs.query({
     active: true,
@@ -68,25 +86,51 @@ async function getActiveTab(): Promise<chrome.tabs.Tab> {
   return tab;
 }
 
-async function collectEvidence(tabId: number): Promise<Evidence> {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tabId, { type: 'COLLECT_EVIDENCE' } satisfies SnitchMessage).catch(() => {
-      // ignore send error, the listener will catch the response
-    });
+async function pingContentScript(tabId: number): Promise<boolean> {
+  try {
+    const response = (await chrome.tabs.sendMessage(
+      tabId,
+      { type: 'PING' } satisfies SnitchMessage,
+    )) as SnitchMessage | undefined;
+    return response?.type === 'PONG';
+  } catch {
+    return false;
+  }
+}
 
-    const handler = (msg: SnitchMessage, sender: chrome.runtime.MessageSender) => {
-      if (sender.tab?.id !== tabId) return;
-      if (msg?.type !== 'EVIDENCE_RESULT') return;
-      chrome.runtime.onMessage.removeListener(handler);
-      clearTimeout(timer);
-      resolve(msg.evidence);
-    };
+async function ensureContentScript(tabId: number): Promise<void> {
+  if (await pingContentScript(tabId)) return;
 
-    const timer = setTimeout(() => {
-      chrome.runtime.onMessage.removeListener(handler);
-      reject(new Error('Timeout waiting for page evidence'));
-    }, 8000);
-
-    chrome.runtime.onMessage.addListener(handler);
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ['content.js'],
   });
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (await pingContentScript(tabId)) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  throw new Error('DEVSnitcher could not attach to this tab. Refresh the page and try again.');
+}
+
+async function collectEvidence(tabId: number): Promise<Evidence> {
+  const response = (await chrome.tabs.sendMessage(
+    tabId,
+    { type: 'COLLECT_EVIDENCE' } satisfies SnitchMessage,
+  )) as SnitchMessage | undefined;
+
+  if (!response) {
+    throw new Error('No response from content script');
+  }
+
+  if (response.type === 'EVIDENCE_ERROR') {
+    throw new Error(response.error);
+  }
+
+  if (response.type !== 'EVIDENCE_RESULT') {
+    throw new Error('Unexpected response from content script');
+  }
+
+  return response.evidence;
 }

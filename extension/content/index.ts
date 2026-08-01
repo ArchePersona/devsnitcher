@@ -1,15 +1,17 @@
-import type { SnitchMessage } from '../../shared/types';
+import type { Evidence, SnitchMessage } from '../../shared/types';
 
 const PAGE_SCRIPT_SRC = chrome.runtime.getURL('page-script.js');
 
 function injectPageScript(): void {
   try {
+    if (document.documentElement.querySelector('script[data-devsnitcher-page-script]')) return;
+
     const script = document.createElement('script');
     script.src = PAGE_SCRIPT_SRC;
-    script.async = false;
-    (document.head || document.documentElement).appendChild(script);
-    script.addEventListener('load', () => script.remove());
-    script.addEventListener('error', () => script.remove());
+    script.dataset.devsnitcherPageScript = 'true';
+    script.onload = () => script.remove();
+    script.onerror = () => script.remove();
+    document.documentElement.prepend(script);
   } catch {
     // Injection can fail under strict CSP; silently ignore so we don't break the page.
   }
@@ -18,20 +20,57 @@ function injectPageScript(): void {
 injectPageScript();
 
 window.addEventListener('message', (ev: MessageEvent) => {
-  if (ev.source !== window) return;
   const data = ev.data as SnitchMessage | undefined;
   if (!data || !('type' in data)) return;
-  if (data.type !== 'EVIDENCE_RESULT') return;
-  chrome.runtime.sendMessage(data).catch(() => {
-    // service worker may be asleep; ignore
-  });
+
+  if (data.type === 'SNITCH') {
+    chrome.runtime.sendMessage(data).then((response) => {
+      if (response && typeof response === 'object' && 'type' in response) {
+        window.postMessage(response, '*');
+      }
+    }).catch(() => {
+      // service worker may be asleep; ignore
+    });
+  }
 });
 
 chrome.runtime.onMessage.addListener((msg: SnitchMessage, _sender, sendResponse) => {
+  if (msg?.type === 'PING') {
+    sendResponse({ type: 'PONG' });
+    return false;
+  }
+
   if (msg?.type === 'COLLECT_EVIDENCE') {
-    window.postMessage({ type: 'COLLECT_EVIDENCE' } satisfies SnitchMessage, '*');
-    sendResponse({ ok: true });
+    collectEvidenceFromPage()
+      .then((evidence) => sendResponse({ type: 'EVIDENCE_RESULT', evidence }))
+      .catch((error) =>
+        sendResponse({
+          type: 'EVIDENCE_ERROR',
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
     return true;
   }
+
   return false;
 });
+
+function collectEvidenceFromPage(): Promise<Evidence> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      window.removeEventListener('message', handler);
+      reject(new Error('Timeout waiting for page evidence'));
+    }, 8000);
+
+    const handler = (ev: MessageEvent) => {
+      const data = ev.data as SnitchMessage | undefined;
+      if (!data || data.type !== 'EVIDENCE_RESULT') return;
+      clearTimeout(timer);
+      window.removeEventListener('message', handler);
+      resolve(data.evidence);
+    };
+
+    window.addEventListener('message', handler);
+    window.postMessage({ type: 'COLLECT_EVIDENCE' }, '*');
+  });
+}

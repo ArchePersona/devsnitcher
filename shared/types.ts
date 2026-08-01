@@ -69,7 +69,9 @@ export type ReportFormat = 'markdown' | 'json';
 export type SnitchMessage =
   | { type: 'COLLECT_EVIDENCE' }
   | { type: 'EVIDENCE_RESULT'; evidence: Evidence }
-  | { type: 'PAGE_SCRIPT_READY' }
+  | { type: 'EVIDENCE_ERROR'; error: string }
+  | { type: 'PING' }
+  | { type: 'PONG' }
   | { type: 'SNITCH'; userNotes: string; screenshot: boolean }
   | { type: 'SNITCH_RESULT'; report: string; screenshotDataUrl?: string }
   | { type: 'SNITCH_ERROR'; error: string };
