@@ -2,77 +2,97 @@
 
 **Press SNITCH. Paste into AI.**
 
-DEVSnitcher is a tiny open-source browser extension that turns browser evidence into an AI-ready debugging report.
+Browser bugs are annoying enough already.
 
-When a browser bug happens, developers usually have to manually copy console errors, failed network requests, stack traces, browser details, and DOM context.
+The last thing you should have to do is spend ten minutes copying console errors, failed requests, browser details, stack traces, and bits of HTML into a chat window just so an AI tool has enough context to help.
 
 DEVSnitcher turns that into one action.
 
-```text
-Click SNITCH.
-Paste the report into ChatGPT, Claude, Gemini, Cursor, Copilot, GitHub, Slack, or wherever you debug.
-```
+## The problem
 
-No accounts. No backend. No cloud. No telemetry. No AI vendor lock-in.
+When something breaks in a browser, the useful evidence is spread across several places.
 
----
+You might need the console, the network panel, the page URL, the browser details, the failed request, the JavaScript error, and the part of the page you were working with.
 
-## What it captures
+Most of the time, developers collect that by hand.
 
-DEVSnitcher can capture:
+DEVSnitcher does it for you.
 
-- URL, page title, browser, platform, viewport, and timestamp
-- Console warnings and errors
-- Failed network requests
-- HTTP status codes and request duration
-- Unhandled JavaScript exceptions
-- Unhandled Promise rejections
-- Focused DOM element and relevant HTML context
-- Optional screenshot marker
-- Summary counts
+## What it does
 
----
+Click **SNITCH**.
 
-## What it is not
+DEVSnitcher builds a clean Markdown report from the browser evidence around the problem and puts it on your clipboard.
+
+Then paste it wherever you debug:
+
+- ChatGPT
+- Claude
+- Gemini
+- Cursor
+- Copilot
+- GitHub
+- Slack
+- a bug report
+- a text file
+
+No account is required.
+
+No cloud service is required.
+
+No AI provider is built in.
+
+## What it can capture
+
+DEVSnitcher can collect:
+
+- page URL and title
+- browser and platform details
+- viewport size
+- timestamp
+- console warnings and errors
+- failed network requests
+- HTTP status codes and request timing
+- unhandled JavaScript errors
+- unhandled Promise rejections
+- the focused page element and useful HTML context
+- an optional screenshot marker
+- summary counts
+
+## What it does not do
 
 DEVSnitcher is not an AI agent.
 
-It is not a diagnosis engine.
+It does not diagnose the bug for you.
 
-It is not a monitoring platform.
+It does not upload your data to a backend.
 
-It is not a SaaS product.
+It does not monitor you in the background.
 
-It does not upload your data anywhere.
+It captures evidence locally, removes obvious secrets where it can, builds the report, and hands it back to you.
 
-It captures evidence locally, redacts obvious secrets, builds a Markdown report, and puts it on your clipboard.
+You decide where it goes next.
 
-You decide where to paste it.
+## Why it is useful
 
----
+AI debugging is much better when the AI gets the actual evidence instead of a description like:
+
+> "The page is broken and there's some red stuff in the console."
+
+DEVSnitcher gives the AI a better starting point without forcing you into another platform.
 
 ## Install for local testing
-
-Clone the repo:
 
 ```powershell
 git clone https://github.com/ArchePersona/devsnitcher.git
 cd DEVSnitcher
-```
-
-Install dependencies:
-
-```powershell
 npm install
-```
-
-Build the extension:
-
-```powershell
 npm run build
 ```
 
-Load it in Chrome:
+Then load the `dist/` directory as an unpacked extension in Chrome or Edge.
+
+### Chrome
 
 ```text
 chrome://extensions
@@ -81,7 +101,7 @@ Load unpacked
 Select the dist/ directory
 ```
 
-Load it in Edge:
+### Edge
 
 ```text
 edge://extensions
@@ -89,29 +109,6 @@ Developer Mode → On
 Load unpacked
 Select the dist/ directory
 ```
-
----
-
-## Manual test
-
-Start a local test server:
-
-```powershell
-cd D:\DEVSnitcher
-python -m http.server 8088
-```
-
-Open:
-
-```text
-http://localhost:8088/test.html
-```
-
-Trigger the test buttons, then click **SNITCH**.
-
-Paste the clipboard into a text file or AI chat and confirm the report includes environment, console, network, JavaScript, DOM context, and summary sections.
-
----
 
 ## Development
 
@@ -123,42 +120,15 @@ npm test
 npm run dev
 ```
 
-Current validation:
+## The Nerd Section
 
-```text
-Build: passing
-TypeScript: passing
-ESLint: passing
-Tests: 24/24 passing
-Chrome/Chromium: manually validated
-Microsoft Edge: manually validated
-```
+DEVSnitcher is intentionally small and standalone.
 
----
+It captures browser-side evidence, redacts obvious secrets, turns the result into Markdown, and copies it to the clipboard.
 
-## Current release
+There is no backend, no telemetry service, no AI call, and no required account.
 
-Current locked release:
-
-```text
-devsnitcher-v0.1.1-target-icon
-```
-
-Current icon:
-
-```text
-dark navy square
-red target ring
-red center dot
-```
-
-Release notes are available in [CHANGELOG.md](CHANGELOG.md).
-
----
-
-## Documentation
-
-Deeper docs:
+Deeper documentation lives here:
 
 - [Whitepaper](docs/WHITEPAPER.md)
 - [Architecture](docs/ARCHITECTURE.md)
@@ -167,33 +137,22 @@ Deeper docs:
 - [Contributing](CONTRIBUTING.md)
 - [Security](SECURITY.md)
 
----
+## The ARCHETRON Ecosystem
 
-## Open source
+DEVSnitcher works on its own, but it shares the same evidence-first thinking used across ARCHETRON.
 
-DEVSnitcher is open source under the MIT License.
+- **SHERLOCK** reconstructs evidence from larger project histories.
+- **ERIE** transforms disconnected data into structured evidence with context, relationships, and provenance.
+- **PEEP** observes execution as it happens.
+- **ARCHERAT** watches telemetry and operational behavior.
+- **ARCHE** decides where cognitive attention should go next.
+- **GATEHOUSE** handles authority and governance boundaries.
+- **CTRL TOWER** gives people an operator view of the system.
+- **ARCHESTRATOR** manages software engineering work.
+- **ARCHEMADA** is the user-facing software engineering application.
+- **NIRMATA** creates personas for ARCHE.
 
-You can use it, fork it, modify it, inspect it, and contribute to it.
-
-The point of the project is simple: developers should be able to capture browser evidence without trusting a cloud service or buying into a platform.
-
----
-
-## Evidence First. AI Second.
-
-DEVSnitcher is intentionally standalone: local browser evidence capture, one SNITCH report, no backend, no telemetry, no AI calls.
-
-For deeper evidence reconstruction, the same principle continues in **SHERLOCK**: files, conversations, timelines, source artifacts, provenance, and investigation reports.
-
-DEVSnitcher does not require SHERLOCK.
-
-If DEVSnitcher helps you, please consider supporting the bootstrapped founder by checking out SHERLOCK:
-
-```text
-https://sherlock-xprize.web.app
-```
-
----
+Each piece has a separate job. Together, they form **ARCHETRON**.
 
 ## License
 
