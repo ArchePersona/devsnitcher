@@ -139,8 +139,30 @@ Deeper documentation lives here:
 
 ## The ARCHETRON Ecosystem
 
-DEVSnitcher works on its own, but it shares the same evidence-first thinking used across ARCHETRON.
+DEVSnitcher is the browser evidence-capture utility in the ARCHETRON ecosystem.
 
+It is intentionally standalone: it does not require the rest of ARCHETRON, and the rest of ARCHETRON does not need to sit inside DEVSnitcher. Its job is narrower and useful on its own — capture the evidence already present around a browser failure and make that evidence immediately portable.
+
+That puts DEVSnitcher at the edge of the larger evidence-first architecture:
+
+```text
+BROWSER FAILURE
+      │
+      ▼
+ DEVSnitcher
+ capture + redact + package
+      │
+      ├──────────────► AI / issue / chat / human debugger
+      │
+      └──────────────► evidence workflows
+                           │
+                           ▼
+                    SHERLOCK / ERIE
+```
+
+The ecosystem pieces keep separate jobs:
+
+- **DEVSnitcher** captures local browser evidence and packages it for immediate use.
 - **SHERLOCK** reconstructs evidence from larger project histories.
 - **ERIE** transforms disconnected data into structured evidence with context, relationships, and provenance.
 - **PEEP** observes execution as it happens.
@@ -151,6 +173,8 @@ DEVSnitcher works on its own, but it shares the same evidence-first thinking use
 - **ARCHESTRATOR** manages software engineering work.
 - **ARCHEMADA** is the user-facing software engineering application.
 - **NIRMATA** creates personas for ARCHE.
+
+The shared principle is not that every tool must be coupled together. It is that intelligence works better when observation, evidence, reasoning, authority, and action are kept distinguishable.
 
 Each piece has a separate job. Together, they form **ARCHETRON**.
 
