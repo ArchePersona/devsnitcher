@@ -19,14 +19,17 @@ npm run lint
 npm test
 ```
 
-Expected result:
+Do not hard-code a passing test count in documentation. The current suite is expected to complete with zero failures.
 
-```text
-Build: dist/ generated
-TypeScript: 0 errors
-ESLint: 0 errors
-Tests: 24/24 passing
-```
+For the encrypted cache, focused verification should establish at minimum:
+
+- plaintext evidence is not used as the persisted cache representation
+- AES-GCM encryption/decryption round-trip succeeds
+- altered authenticated ciphertext fails decryption
+- a cache record bound to the wrong tab/page identity is rejected
+- SNITCH can consume a valid encrypted cached record
+
+Keep this coverage proportional. Do not build a large mock framework solely to exercise browser APIs that are better proven manually.
 
 ---
 
@@ -73,7 +76,7 @@ Select D:\DEVSnitcher\dist
 
 ## Proof checklist
 
-Trigger the test buttons, click **SNITCH**, then paste the clipboard output into a text file or AI chat.
+Trigger the test buttons, allow the rolling cache to refresh, click **SNITCH**, then paste the clipboard output into a text file or AI chat.
 
 The report should include:
 
@@ -96,6 +99,26 @@ The report should include:
 | Summary counts generated | Pass |
 | Obvious secrets redacted | Pass |
 | No DEVSnitcher backend traffic | Pass |
+| SNITCH works from encrypted rolling cache | Pass |
+
+---
+
+## Encrypted-cache proof
+
+The browser-session cache is extension-owned and encrypted before evidence storage.
+
+Verify the following in a development build:
+
+1. Open the test page and generate console/network/runtime evidence.
+2. Wait at least one rolling refresh interval.
+3. Click **SNITCH** and confirm the pre-click evidence appears in the report.
+4. Confirm the extension uses `chrome.storage.session` for the cache and that the evidence record is ciphertext plus required metadata rather than a plaintext `Evidence` object.
+5. Confirm ordinary page JavaScript cannot read the cache or encryption key.
+6. Close the tab and confirm its per-tab cache record is removed.
+
+The cache key must not appear in page globals, DOM attributes, page messages, report output, or content-script state.
+
+AES-GCM authentication failure should be treated as an unusable cache record, not as valid evidence.
 
 ---
 
@@ -103,7 +126,7 @@ The report should include:
 
 The page must not be able to invoke the privileged `SNITCH` flow through `window.postMessage`.
 
-From page JavaScript, attempting to post a message such as:
+From page JavaScript, attempting to post:
 
 ```js
 window.postMessage({ type: 'SNITCH', screenshot: true }, '*');
@@ -111,14 +134,27 @@ window.postMessage({ type: 'SNITCH', screenshot: true }, '*');
 
 must not:
 
-- trigger evidence capture through the background service worker
+- trigger privileged SNITCH execution
 - trigger screenshot capture
+- change the clipboard
 - produce `SNITCH_RESULT`
 - expose a screenshot data URL or generated report back to the page
 
 The normal popup button must continue to initiate `SNITCH` successfully.
 
-This regression proof protects the boundary between untrusted page JavaScript and privileged extension behavior.
+This regression proof protects the privileged-action boundary between untrusted page JavaScript and extension behavior.
+
+---
+
+## Evidence-authenticity limitation
+
+Do **not** use successful encrypted-cache or SNITCH-boundary tests as proof that page evidence itself cannot be forged.
+
+The current page-facing evidence transport uses `window.postMessage` for `COLLECT_EVIDENCE` / `EVIDENCE_RESULT`. A hostile page script may attempt to fabricate an `EVIDENCE_RESULT` before the content bridge accepts it.
+
+The encrypted cache begins protecting evidence only after that acceptance point.
+
+Treat page-evidence ingress authenticity as separate security work.
 
 ---
 
@@ -183,7 +219,7 @@ npm run lint
 npm test
 ```
 
-Then complete manual browser proof in at least one Chromium browser, including the trust-boundary regression proof above.
+Then complete manual browser proof in at least one Chromium browser, including encrypted-cache and privileged-action regression checks.
 
 Recommended release evidence note:
 
@@ -202,15 +238,17 @@ Checks:
 - JavaScript errors captured
 - DOM context captured
 - Redaction checked
+- Encrypted rolling cache verified
 - Clipboard output verified
 - Page-originated SNITCH blocked
+- Page-evidence authenticity limitation acknowledged separately
 ```
 
 ---
 
 ## Evidence First. AI Second.
 
-DEVSnitcher is intentionally standalone: local browser evidence capture, one SNITCH report, no backend, no telemetry, no AI calls.
+DEVSnitcher is intentionally standalone: local browser evidence capture, encrypted browser-session cache, one user-triggered SNITCH report, no backend, no telemetry, no AI calls.
 
 For deeper evidence reconstruction, the same principle continues in **SHERLOCK**: files, conversations, timelines, source artifacts, provenance, and investigation reports.
 
