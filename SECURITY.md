@@ -28,6 +28,29 @@ DEVSnitcher is designed around these constraints:
 - Clipboard-based output
 - Best-effort redaction before report generation
 - User decides where the report is pasted
+- Only the extension UI may initiate the privileged `SNITCH` action
+- Page JavaScript must not be able to invoke privileged extension actions through the content bridge
+
+The page-facing message bridge is limited to evidence collection. It is not a general command channel into the extension service worker.
+
+---
+
+## Privilege boundary
+
+The browser page and the extension run in different trust domains.
+
+DEVSnitcher therefore treats page-controlled messages as untrusted input. Page JavaScript must not be able to:
+
+- initiate `SNITCH`
+- request screenshot capture
+- receive `SNITCH_RESULT`
+- use the content script as a proxy for privileged extension APIs
+
+The intended privileged path begins with an explicit user action in the extension popup.
+
+```text
+User clicks SNITCH → Popup → Background → Evidence collection → Popup → Clipboard
+```
 
 ---
 
@@ -77,6 +100,8 @@ Please report issues such as:
 - A permission that is broader than needed
 - A content-script injection bug
 - A cross-origin evidence leak
+- Page-controlled messages invoking privileged extension behavior
+- Forged or untrusted page evidence being accepted as trusted extension output
 
 ---
 
