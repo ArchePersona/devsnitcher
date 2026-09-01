@@ -28,10 +28,13 @@ DEVSnitcher is designed around these constraints:
 - Clipboard-based output
 - Best-effort redaction before report generation
 - User decides where the report is pasted
-- Only the extension UI may initiate the privileged `SNITCH` action
+- Only the extension popup may initiate the privileged `SNITCH` action
+- Background explicitly refuses `SNITCH` messages that arrive with a tab sender
 - Page JavaScript must not be able to invoke privileged extension actions through the content bridge
+- Cache-write evidence is shape-validated before encryption
 - Accepted rolling evidence is encrypted before it is written to extension session storage
 - The cache encryption key remains in trusted extension context
+- Per-tab cache records are cleared on tab close and navigation/load
 
 The page-facing message bridge is limited to evidence collection. It is not a general command channel into the extension service worker.
 
@@ -57,13 +60,15 @@ The intended privileged path begins with an explicit user action in the extensio
 User clicks SNITCH → Popup → Background → Decrypt cache → Redact → Report → Popup → Clipboard
 ```
 
+The background service worker enforces the popup-only boundary directly. A `SNITCH` message carrying a `sender.tab` is refused rather than resolved as an authorized source tab.
+
 ---
 
 ## Encrypted evidence cache
 
 DEVSnitcher maintains a browser-session rolling evidence cache so the normal SNITCH path can use evidence accumulated before the click without asking the page for a new trusted answer at that moment.
 
-Accepted evidence reaches the background service worker through the extension runtime. Background then encrypts it with AES-256-GCM before writing the cache record to `chrome.storage.session`.
+Accepted evidence reaches the background service worker through the extension runtime. Background validates its expected shape, then encrypts it with AES-256-GCM before writing the cache record to `chrome.storage.session`. Malformed cache-write payloads are rejected.
 
 Current cache protections include:
 
@@ -73,14 +78,16 @@ Current cache protections include:
 - session-scoped generated encryption key
 - `chrome.storage.session` access restricted to `TRUSTED_CONTEXTS`
 - per-tab encrypted records
+- evidence-shape validation before storage and after decryption
 - URL mismatch rejection for stale page records
 - cache removal when a tab closes
+- cache clearing when a tab navigates or begins loading a new page
 
 Plaintext evidence is not intentionally persisted as the cache representation.
 
 The key is not sent to the page or content script.
 
-Modification of authenticated ciphertext should cause decryption failure rather than silently yielding modified evidence.
+Modification of authenticated ciphertext or IV should cause decryption failure rather than silently yielding modified evidence. A cache record bound to a different tab must also fail authentication because the tab identity is part of AES-GCM authenticated additional data.
 
 ---
 
@@ -97,8 +104,8 @@ Therefore DEVSnitcher must not claim that the encrypted cache provides end-to-en
 This distinction matters:
 
 ```text
-Privileged-action authorization: protected by the extension boundary.
-Stored-cache confidentiality/integrity: protected by extension-owned AES-GCM encryption.
+Privileged-action authorization: protected by popup-only background enforcement.
+Stored-cache confidentiality/integrity: protected by extension-owned AES-GCM encryption and validation.
 Original page-evidence authenticity: separate unresolved trust-boundary concern.
 ```
 
@@ -152,11 +159,13 @@ Please report issues such as:
 - A permission that is broader than needed
 - A content-script injection bug
 - A cross-origin evidence leak
-- Page-controlled messages invoking privileged extension behavior
+- Page-controlled or tab-relayed messages invoking privileged extension behavior
 - Plaintext evidence being persisted where the encrypted cache is expected
 - A page or content script gaining access to the cache key
-- Tampered cache ciphertext being accepted without authentication failure
+- Malformed cache evidence being accepted for storage
+- Tampered cache ciphertext or IV being accepted without authentication failure
 - One tab consuming another tab's cached evidence
+- Stale cache surviving navigation and being consumed for a different page
 - Forged or untrusted page evidence being accepted as trusted extension output
 
 ---
