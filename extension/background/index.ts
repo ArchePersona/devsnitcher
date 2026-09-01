@@ -20,7 +20,7 @@ void chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 chrome.runtime.onMessage.addListener(
   (msg: SnitchMessage, sender, sendResponse) => {
     if (msg?.type === 'CACHE_EVIDENCE') {
-      if (sender.id !== chrome.runtime.id || !sender.tab?.id || !sender.tab.url) {
+      if (sender.id !== chrome.runtime.id || sender.tab?.id == null || !sender.tab.url) {
         sendResponse({
           type: 'EVIDENCE_ERROR',
           error: 'Rejected evidence cache write from untrusted sender',
@@ -46,9 +46,7 @@ chrome.runtime.onMessage.addListener(
         const tab = getTabFromSender(sender) ?? (await getActiveTab());
 
         await ensureContentScript(tab.id!);
-        await refreshEvidenceCache(tab.id!);
-
-        const evidence = await readCachedEvidence(tab.id!, tab.url!);
+        const evidence = await getCachedEvidenceOrRefresh(tab.id!, tab.url!);
         const screenshot = msg.screenshot
           ? await captureScreenshot(tab.windowId)
           : null;
@@ -153,6 +151,18 @@ async function ensureContentScript(tabId: number): Promise<void> {
   throw new Error(
     'DEVSnitcher could not attach to this tab. The page may enforce a CSP that blocks injection, or the tab was opened before the extension was installed. Refresh the page and try again.',
   );
+}
+
+async function getCachedEvidenceOrRefresh(
+  tabId: number,
+  url: string,
+): Promise<Evidence> {
+  try {
+    return await readCachedEvidence(tabId, url);
+  } catch {
+    await refreshEvidenceCache(tabId);
+    return readCachedEvidence(tabId, url);
+  }
 }
 
 async function refreshEvidenceCache(tabId: number): Promise<void> {
