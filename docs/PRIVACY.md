@@ -32,6 +32,16 @@ The user controls the next step by pasting the report into an AI chat, issue tra
 
 ---
 
+## User-initiated capture
+
+The privileged `SNITCH` action begins from the extension popup when the user clicks **SNITCH**.
+
+Page JavaScript is not allowed to initiate `SNITCH`, request screenshot capture through that command, or receive the privileged `SNITCH_RESULT` response.
+
+The page-facing bridge exists only to return browser evidence requested by the extension during an active capture.
+
+---
+
 ## What may be captured?
 
 Depending on page activity, DEVSnitcher may capture:
@@ -121,12 +131,12 @@ This avoids AI vendor lock-in and keeps the extension useful even without an AI 
 
 ## User control
 
-The user remains in control of the report.
+The user remains in control of the report and of when a privileged capture begins.
 
 The intended flow is:
 
 ```text
-Capture locally → Review report → Paste where chosen
+User clicks SNITCH → Capture locally → Review report → Paste where chosen
 ```
 
 That is the privacy boundary.
