@@ -36,7 +36,7 @@ The user controls the next external step by pasting the report into an AI chat, 
 
 DEVSnitcher observes debugging evidence before the user presses SNITCH so the resulting report can include the events that led up to the problem.
 
-The extension periodically moves an evidence snapshot into extension-owned browser-session storage. Before the evidence record is written, the trusted background service worker encrypts it with AES-256-GCM.
+The extension periodically moves an evidence snapshot into extension-owned browser-session storage. The trusted background service worker first validates the evidence payload, then encrypts accepted evidence with AES-256-GCM before the cache record is written.
 
 The cache is:
 
@@ -44,9 +44,11 @@ The cache is:
 - session-scoped
 - stored through `chrome.storage.session`
 - restricted to trusted extension contexts
+- shape-validated before encryption
 - encrypted before the evidence record is persisted
 - isolated per tab/page identity
 - removed per tab when that tab closes
+- cleared when the tab navigates or begins loading a new page
 
 The encryption key remains in trusted extension context and is not provided to the webpage or content script.
 
@@ -58,7 +60,7 @@ The cache is not uploaded anywhere by DEVSnitcher.
 
 The privileged `SNITCH` action begins from the extension popup when the user clicks **SNITCH**.
 
-Page JavaScript is not allowed to initiate `SNITCH`, request screenshot capture through that command, or receive the privileged `SNITCH_RESULT` response.
+The background service worker enforces that boundary directly: a `SNITCH` message arriving with a tab sender is refused. Page JavaScript is not allowed to initiate `SNITCH`, request screenshot capture through that command, or receive the privileged `SNITCH_RESULT` response.
 
 SNITCH normally reads and decrypts the existing local encrypted cache. If no usable cache exists, the extension may request an immediate local refresh as fallback.
 
@@ -169,12 +171,12 @@ This avoids AI vendor lock-in and keeps the extension useful even without an AI 
 
 ## User control
 
-The extension may locally observe and encrypt debugging evidence before the click, but privileged report generation and optional screenshot capture remain user-triggered.
+The extension may locally observe, validate, and encrypt debugging evidence before the click, but privileged report generation and optional screenshot capture remain user-triggered.
 
 The intended flow is:
 
 ```text
-Observe locally → Encrypt session cache → User clicks SNITCH → Decrypt locally → Redact → Report → Paste where chosen
+Observe locally → Validate → Encrypt session cache → User clicks SNITCH → Decrypt locally → Redact → Report → Paste where chosen
 ```
 
 Nothing is automatically uploaded by DEVSnitcher.
