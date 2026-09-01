@@ -5,7 +5,8 @@ DEVSnitcher is built as a small browser extension with a strict local-first evid
 The core path is:
 
 ```text
-Popup → Background → Content Bridge → Page Script → Collectors → Redaction → Report → Clipboard
+Page Script → Collectors → Content Bridge → Background → Encrypted Session Cache
+User clicks SNITCH → Popup → Background → Decrypt Cache → Redaction → Report → Clipboard
 ```
 
 The extension does not require a backend, account, dashboard, hosted service, or AI provider integration.
@@ -26,36 +27,49 @@ Everything else is secondary.
 
 ## Runtime flow
 
-1. User opens the popup.
-2. User optionally enters a short description.
-3. User clicks **SNITCH**.
-4. Popup sends a SNITCH request to the background service worker.
-5. Background finds the active tab.
-6. Background checks whether the content script is present.
-7. If needed, background injects the content script.
-8. Content bridge requests evidence from the page script.
-9. Page script collects browser evidence from the page context.
-10. Evidence returns to the background service worker.
+1. The page script observes browser evidence in page context.
+2. The isolated content bridge periodically requests the current evidence snapshot.
+3. The content bridge sends accepted evidence to the background service worker through the extension runtime.
+4. Background encrypts the evidence with AES-256-GCM and writes only ciphertext plus required metadata to `chrome.storage.session`.
+5. User opens the popup, optionally enters a short description, and clicks **SNITCH**.
+6. Popup sends `SNITCH` to the background service worker.
+7. Background resolves the intended tab and ensures the content script is present.
+8. Background prefers the existing encrypted cache; if no usable cache exists, it may request one immediate refresh.
+9. Background decrypts the cache inside trusted extension context.
+10. Background optionally captures the user-requested screenshot.
 11. Background applies redaction and builds the report.
 12. Popup writes the report to the clipboard.
 13. User pastes the report into AI or another debugging channel.
 
 ---
 
-## Trust boundary
+## Trust boundaries
+
+DEVSnitcher separates three security concerns.
+
+### Privileged-action authorization
 
 `SNITCH` is a privileged extension action and must only originate from the extension UI.
 
 Page JavaScript must not be able to initiate `SNITCH`, request screenshot capture, or receive `SNITCH_RESULT` through the page-facing bridge.
 
-The page-facing bridge exists only to support evidence collection requested by the extension:
-
-```text
-Background → Content Bridge → COLLECT_EVIDENCE → Page Script
-Page Script → EVIDENCE_RESULT → Content Bridge → Background
-```
-
 The content bridge must not act as a general forwarding path from page-controlled `window.postMessage` traffic into privileged extension APIs.
+
+### Encrypted cache confidentiality and integrity
+
+Accepted evidence is cached only after it reaches the trusted background service worker.
+
+Background encrypts cache records with AES-256-GCM before storage. The key remains in trusted extension session storage, cache storage is restricted to `TRUSTED_CONTEXTS`, and each write uses a fresh random IV. Authenticated additional data binds the ciphertext to its tab cache identity.
+
+The page does not receive the cache key or decrypted cache contents.
+
+### Page-evidence authenticity
+
+The page script and ordinary page JavaScript share the page execution environment. The current page-facing evidence transport uses `window.postMessage` for `COLLECT_EVIDENCE` / `EVIDENCE_RESULT`.
+
+Encryption begins only after the extension accepts that evidence. Therefore the encrypted cache protects accepted evidence at rest; it does **not** cryptographically prove that the original page-context evidence producer was genuine.
+
+Forged page evidence before cache ingestion remains a separate evidence-integrity concern.
 
 ---
 
@@ -80,21 +94,24 @@ The popup should stay simple.
 
 ### Background service worker
 
-The background service worker coordinates evidence collection.
+The background service worker owns privileged coordination and the encrypted cache boundary.
 
 Responsibilities:
 
-- Resolve the active tab
+- Resolve the active/source tab
 - Reject unsupported browser-internal pages
-- Ping the content script
-- Inject the content script only when needed
-- Request evidence from the content bridge
-- Capture screenshot evidence when supported
+- Ping or inject the content script when needed
+- Accept cache writes only through the expected extension runtime path
+- Generate/import the session cache key
+- Encrypt accepted evidence with AES-256-GCM before storage
+- Decrypt valid tab-bound cache records for SNITCH
+- Remove per-tab cache records when tabs close
+- Capture screenshot evidence when explicitly requested by SNITCH
 - Apply redaction
 - Build the report payload
 - Return output to the popup
 
-The background worker should not become a dashboard, analytics layer, or long-running monitor.
+The background worker should not become a dashboard, analytics layer, or hosted monitor.
 
 ---
 
@@ -105,14 +122,12 @@ The content bridge runs in the isolated extension world.
 Responsibilities:
 
 - Respond to PING/PONG checks
-- Receive COLLECT_EVIDENCE from background
-- Bridge requests into the page context
-- Wait for EVIDENCE_RESULT or EVIDENCE_ERROR
-- Send results back through the extension message response
+- Periodically request evidence from the page script
+- Prevent overlapping rolling-cache refreshes
+- Send accepted evidence to background with `CACHE_EVIDENCE`
+- Receive explicit `REFRESH_CACHE` fallback requests from background
 
-The content bridge must not accept page-originated `SNITCH` commands or forward page-controlled requests into privileged extension behavior.
-
-The bridge exists because extension context and page context are separated by the browser.
+The content bridge does not hold the encryption/decryption key and must not accept page-originated `SNITCH` commands or forward page-controlled requests into privileged extension behavior.
 
 ---
 
@@ -129,7 +144,30 @@ Responsibilities:
 - Capture DOM context
 - Return evidence when asked
 
-The page script should collect evidence only. It should not diagnose or initiate privileged extension actions.
+The page script should collect evidence only. It should not diagnose, access the encrypted cache, hold its key, or initiate privileged extension actions.
+
+---
+
+### Encrypted evidence cache
+
+The rolling cache is browser-session-scoped and extension-owned.
+
+Current properties:
+
+- `chrome.storage.session`
+- access restricted to `TRUSTED_CONTEXTS`
+- AES-256-GCM authenticated encryption
+- fresh 12-byte random IV per encryption
+- tab-bound authenticated additional data
+- per-tab cache records
+- stale URL mismatch rejected
+- per-tab record removed when the tab closes
+- rolling refresh approximately every two seconds
+- SNITCH prefers a valid existing cache and refreshes only as fallback
+
+Only ciphertext and the metadata needed to validate/decrypt it are stored as the evidence record. Plaintext evidence is not intentionally persisted to extension storage.
+
+The cache is not an evidence-provenance system. It protects evidence after acceptance by the extension.
 
 ---
 
@@ -165,7 +203,7 @@ Current redaction areas:
 - Tokens
 - URLs
 
-Redaction should happen before report output.
+Redaction happens after cache decryption and before report output.
 
 Redaction is best effort, not a guarantee.
 
@@ -187,7 +225,7 @@ Markdown is the primary product format because it can be pasted directly into AI
 
 ## Message types
 
-Typical message flow includes:
+Typical extension and page-evidence messages include:
 
 ```text
 SNITCH
@@ -196,21 +234,24 @@ PONG
 COLLECT_EVIDENCE
 EVIDENCE_RESULT
 EVIDENCE_ERROR
+CACHE_EVIDENCE
+CACHE_STORED
+REFRESH_CACHE
+CACHE_REFRESHED
 ```
 
-`SNITCH` belongs to the extension message path initiated by the popup. `COLLECT_EVIDENCE` and its result messages belong to the narrow page-evidence bridge.
-
-The preferred evidence flow is request/response, not broad forwarding through global listeners.
+`SNITCH` belongs only to the extension message path initiated by the popup. Cache messages belong to the extension runtime path. `COLLECT_EVIDENCE` and `EVIDENCE_RESULT` belong to the narrow page-evidence bridge.
 
 ---
 
 ## Permission posture
 
-DEVSnitcher should request only the permissions needed to capture evidence from ordinary web pages.
+DEVSnitcher should request only the permissions needed to capture and protect evidence from ordinary web pages.
 
-Current intended scope:
+Current intended scope includes:
 
 ```json
+"permissions": ["activeTab", "scripting", "clipboardWrite", "tabs", "storage"],
 "host_permissions": ["http://*/*", "https://*/*"]
 ```
 
@@ -226,7 +267,7 @@ The architecture should not add:
 - Hosted storage
 - SaaS backend
 - Built-in AI diagnosis
-- Long-running monitoring
+- Persistent evidence storage beyond the browser session
 - Analytics by default
 - Vendor-specific AI flows
 - Large application frameworks
@@ -237,15 +278,16 @@ Those may be separate products later. They do not belong in the core v0.x extens
 
 ## Stability rules
 
-1. Prefer lazy injection over tab-wide eager injection.
-2. Do not inject on every tab update. The tab-update injection path was removed in v0.1.1 in favor of the PING/PONG handshake with lazy fallback injection.
-3. Keep one clear evidence request path.
-4. Do not allow page-controlled messages to invoke privileged extension actions.
-5. Guard against double-injection.
-6. Keep report output deterministic.
-7. Keep redaction pure and testable.
-8. Keep collectors small.
-9. Keep the popup simple.
+1. Do not allow page-controlled messages to invoke privileged extension actions.
+2. Encrypt accepted cached evidence before storage.
+3. Keep cache keys and decrypted cache contents out of page context.
+4. Keep cache records isolated by tab/page identity.
+5. Do not describe encrypted caching as proof of page-evidence provenance.
+6. Guard against double-injection and overlapping refreshes.
+7. Keep report output deterministic.
+8. Keep redaction pure and testable.
+9. Keep collectors small.
+10. Keep the popup simple.
 
 ---
 
@@ -255,11 +297,9 @@ DEVSnitcher is intentionally standalone.
 
 It may later export into SHERLOCK-style evidence workflows, but v0.1.x has no backend, no SHERLOCK dependency, and no external upload path.
 
-DEVSnitcher captures one browser debugging moment.
+DEVSnitcher captures browser debugging evidence locally.
 
 SHERLOCK is designed for deeper evidence reconstruction across files, conversations, timelines, source artifacts, provenance, and investigation reports.
-
-SHERLOCK is currently part of a hackathon build and is also the commercial support path for the broader evidence-first work.
 
 Shared principle:
 
@@ -277,7 +317,7 @@ https://sherlock-xprize.web.app
 
 ## Evidence First. AI Second.
 
-DEVSnitcher is intentionally standalone: local browser evidence capture, one SNITCH report, no backend, no telemetry, no AI calls.
+DEVSnitcher is intentionally standalone: local browser evidence capture, encrypted browser-session cache, user-triggered SNITCH report, no backend, no telemetry, no AI calls.
 
 For deeper evidence reconstruction, the same principle continues in **SHERLOCK**: files, conversations, timelines, source artifacts, provenance, and investigation reports.
 
