@@ -30,6 +30,8 @@ DEVSnitcher is designed around these constraints:
 - User decides where the report is pasted
 - Only the extension UI may initiate the privileged `SNITCH` action
 - Page JavaScript must not be able to invoke privileged extension actions through the content bridge
+- Accepted rolling evidence is encrypted before it is written to extension session storage
+- The cache encryption key remains in trusted extension context
 
 The page-facing message bridge is limited to evidence collection. It is not a general command channel into the extension service worker.
 
@@ -45,11 +47,59 @@ DEVSnitcher therefore treats page-controlled messages as untrusted input. Page J
 - request screenshot capture
 - receive `SNITCH_RESULT`
 - use the content script as a proxy for privileged extension APIs
+- read the encrypted evidence cache through ordinary page JavaScript
+- obtain the cache encryption key
+- request arbitrary cache decryption
 
 The intended privileged path begins with an explicit user action in the extension popup.
 
 ```text
-User clicks SNITCH → Popup → Background → Evidence collection → Popup → Clipboard
+User clicks SNITCH → Popup → Background → Decrypt cache → Redact → Report → Popup → Clipboard
+```
+
+---
+
+## Encrypted evidence cache
+
+DEVSnitcher maintains a browser-session rolling evidence cache so the normal SNITCH path can use evidence accumulated before the click without asking the page for a new trusted answer at that moment.
+
+Accepted evidence reaches the background service worker through the extension runtime. Background then encrypts it with AES-256-GCM before writing the cache record to `chrome.storage.session`.
+
+Current cache protections include:
+
+- AES-256-GCM authenticated encryption
+- fresh random IV for each encryption operation
+- authenticated additional data bound to the tab cache identity
+- session-scoped generated encryption key
+- `chrome.storage.session` access restricted to `TRUSTED_CONTEXTS`
+- per-tab encrypted records
+- URL mismatch rejection for stale page records
+- cache removal when a tab closes
+
+Plaintext evidence is not intentionally persisted as the cache representation.
+
+The key is not sent to the page or content script.
+
+Modification of authenticated ciphertext should cause decryption failure rather than silently yielding modified evidence.
+
+---
+
+## What encryption does not prove
+
+The encrypted cache protects evidence **after DEVSnitcher accepts it for caching**.
+
+It does not authenticate the original producer of evidence inside page context.
+
+The current page-facing `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` transport uses `window.postMessage`. Ordinary page JavaScript shares that environment with the injected page script and may attempt to forge evidence before the content bridge passes it into the trusted extension runtime.
+
+Therefore DEVSnitcher must not claim that the encrypted cache provides end-to-end evidence provenance.
+
+This distinction matters:
+
+```text
+Privileged-action authorization: protected by the extension boundary.
+Stored-cache confidentiality/integrity: protected by extension-owned AES-GCM encryption.
+Original page-evidence authenticity: separate unresolved trust-boundary concern.
 ```
 
 ---
@@ -69,6 +119,8 @@ Browser debugging evidence can contain secrets, including:
 - Stack traces with internal paths
 
 DEVSnitcher performs best-effort redaction for obvious secrets such as authorization headers, bearer tokens, cookies, passwords, and API-key-like values. Users should still review reports before pasting them into an AI chat, issue tracker, or shared channel.
+
+Encryption of the local session cache does not replace redaction. Redaction still occurs before report output because the user may paste that output outside the browser.
 
 ---
 
@@ -101,6 +153,10 @@ Please report issues such as:
 - A content-script injection bug
 - A cross-origin evidence leak
 - Page-controlled messages invoking privileged extension behavior
+- Plaintext evidence being persisted where the encrypted cache is expected
+- A page or content script gaining access to the cache key
+- Tampered cache ciphertext being accepted without authentication failure
+- One tab consuming another tab's cached evidence
 - Forged or untrusted page evidence being accepted as trusted extension output
 
 ---
@@ -113,7 +169,7 @@ Use normal GitHub issues for regular bugs, UI polish, documentation fixes, or fe
 
 ## Evidence First. AI Second.
 
-DEVSnitcher is intentionally standalone: local browser evidence capture, one SNITCH report, no backend, no telemetry, no AI calls.
+DEVSnitcher is intentionally standalone: local browser evidence capture, encrypted browser-session cache, one user-triggered SNITCH report, no backend, no telemetry, no AI calls.
 
 For deeper evidence reconstruction, the same principle continues in **SHERLOCK**: files, conversations, timelines, source artifacts, provenance, and investigation reports.
 
