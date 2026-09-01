@@ -349,15 +349,54 @@ Press SNITCH.
 Paste into AI.
 ```
 
+## ARCHETRON Ecosystem Context
+
+DEVSnitcher is intentionally standalone, but it belongs to the same evidence-first family of systems as ARCHETRON.
+
+Its place is at the browser edge:
+
+```text
+browser failure
+      │
+      ▼
+ DEVSnitcher
+ capture + redact + package
+      │
+      ├──────────────► AI / issue / chat / human debugger
+      │
+      └──────────────► larger evidence workflows
+                           │
+                           ▼
+                    SHERLOCK / ERIE
+```
+
+DEVSnitcher does not become the investigation engine or the reasoning engine. It captures the immediate evidence cleanly and makes it portable.
+
+The surrounding ecosystem keeps those responsibilities separate:
+
+- **DEVSnitcher** — local browser evidence capture and portable debugging reports.
+- **SHERLOCK** — evidence reconstruction across larger project histories.
+- **ERIE** — structured evidence, context, relationships, and provenance.
+- **PEEP** — live execution observation.
+- **ARCHERAT** — telemetry and operational observation.
+- **ARCHE** — allocation of cognitive attention.
+- **GATEHOUSE** — authority and governance boundaries.
+- **CTRL TOWER** — human operator control.
+- **ARCHESTRATOR** — software engineering execution management.
+- **ARCHEMADA** — user-facing software engineering application.
+- **NIRMATA** — persona creation for ARCHE.
+
+The connection is architectural rather than mandatory coupling: capture, observation, evidence, reasoning, authority, and action remain distinguishable.
+
+DEVSnitcher does not require SHERLOCK or any other ARCHETRON component to be useful.
+
 ---
 
 ## Evidence First. AI Second.
 
-DEVSnitcher is intentionally standalone: local browser evidence capture, one SNITCH report, no backend, no telemetry, no AI calls.
+DEVSnitcher is local browser evidence capture, one SNITCH report, no backend, no telemetry, and no AI calls.
 
 For deeper evidence reconstruction, the same principle continues in **SHERLOCK**: files, conversations, timelines, source artifacts, provenance, and investigation reports.
-
-DEVSnitcher does not require SHERLOCK.
 
 If DEVSnitcher helps you, please consider supporting the bootstrapped founder by checking out SHERLOCK:
 
