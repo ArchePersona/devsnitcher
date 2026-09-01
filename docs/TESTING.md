@@ -99,6 +99,29 @@ The report should include:
 
 ---
 
+## Trust-boundary regression proof
+
+The page must not be able to invoke the privileged `SNITCH` flow through `window.postMessage`.
+
+From page JavaScript, attempting to post a message such as:
+
+```js
+window.postMessage({ type: 'SNITCH', screenshot: true }, '*');
+```
+
+must not:
+
+- trigger evidence capture through the background service worker
+- trigger screenshot capture
+- produce `SNITCH_RESULT`
+- expose a screenshot data URL or generated report back to the page
+
+The normal popup button must continue to initiate `SNITCH` successfully.
+
+This regression proof protects the boundary between untrusted page JavaScript and privileged extension behavior.
+
+---
+
 ## Known browser constraints
 
 ### Local file pages
@@ -160,7 +183,7 @@ npm run lint
 npm test
 ```
 
-Then complete manual browser proof in at least one Chromium browser.
+Then complete manual browser proof in at least one Chromium browser, including the trust-boundary regression proof above.
 
 Recommended release evidence note:
 
@@ -180,6 +203,7 @@ Checks:
 - DOM context captured
 - Redaction checked
 - Clipboard output verified
+- Page-originated SNITCH blocked
 ```
 
 ---
