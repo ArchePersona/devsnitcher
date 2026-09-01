@@ -1,21 +1,39 @@
 import { redactEvidence } from '../../redaction/index';
 import { buildMarkdownReport } from '../../report/markdown';
 import { captureScreenshot } from '../../collectors/screenshot';
+import { EvidenceCache, base64ToBytes, bytesToBase64, isEvidenceShape } from './cache';
 import type { Evidence, SnitchMessage } from '../../shared/types';
 
 const CACHE_KEY_STORAGE = 'devsnitcher:evidence-cache-key:v1';
-const CACHE_RECORD_PREFIX = 'devsnitcher:evidence-cache:v1:';
-const CACHE_AAD_PREFIX = 'devsnitcher-evidence-cache:v1:';
 
-interface EncryptedEvidenceRecord {
-  version: 1;
-  url: string;
-  capturedAt: number;
-  iv: string;
-  ciphertext: string;
-}
+chrome.storage.session
+  .setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
+  .catch(() => {
+    // The default access level (trusted contexts only) already applies.
+  });
 
-void chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+const cache = new EvidenceCache(
+  {
+    get: async (key) => chrome.storage.session.get(key),
+    set: async (items) => {
+      await chrome.storage.session.set(items);
+    },
+    remove: async (key) => {
+      await chrome.storage.session.remove(key);
+    },
+  },
+  getOrCreateCacheKey,
+);
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void cache.clear(tabId);
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.url || changeInfo.status === 'loading') {
+    void cache.clear(tabId);
+  }
+});
 
 chrome.runtime.onMessage.addListener(
   (msg: SnitchMessage, sender, sendResponse) => {
@@ -28,7 +46,17 @@ chrome.runtime.onMessage.addListener(
         return false;
       }
 
-      encryptAndStoreEvidence(sender.tab.id, sender.tab.url, msg.evidence)
+      if (!isEvidenceShape(msg.evidence)) {
+        // Reject malformed cache-write messages instead of coercing them into valid data.
+        sendResponse({
+          type: 'EVIDENCE_ERROR',
+          error: 'Rejected malformed evidence cache write',
+        } satisfies SnitchMessage);
+        return false;
+      }
+
+      cache
+        .store(sender.tab.id, sender.tab.url, msg.evidence)
         .then(() => sendResponse({ type: 'CACHE_STORED' } satisfies SnitchMessage))
         .catch((err) =>
           sendResponse({
@@ -41,9 +69,19 @@ chrome.runtime.onMessage.addListener(
 
     if (msg?.type !== 'SNITCH') return false;
 
+    // Privileged action: only the extension popup may trigger SNITCH.
+    // Messages relayed from a tab (content script) are refused.
+    if (sender.tab) {
+      sendResponse({
+        type: 'SNITCH_ERROR',
+        error: 'SNITCH can only be triggered from the DEVSnitcher popup.',
+      } satisfies SnitchMessage);
+      return false;
+    }
+
     (async () => {
       try {
-        const tab = getTabFromSender(sender) ?? (await getActiveTab());
+        const tab = await getActiveTab();
 
         await ensureContentScript(tab.id!);
         const evidence = await getCachedEvidenceOrRefresh(tab.id!, tab.url!);
@@ -74,26 +112,6 @@ chrome.runtime.onMessage.addListener(
     return true;
   },
 );
-
-chrome.tabs.onRemoved.addListener((tabId) => {
-  void chrome.storage.session.remove(cacheRecordKey(tabId));
-});
-
-function getTabFromSender(sender?: chrome.runtime.MessageSender): chrome.tabs.Tab | undefined {
-  if (sender?.tab?.id && sender.tab.url) {
-    const url = sender.tab.url;
-    if (
-      url.startsWith('chrome://') ||
-      url.startsWith('chrome-extension://') ||
-      url.startsWith('edge://') ||
-      url.startsWith('about:')
-    ) {
-      return undefined;
-    }
-    return sender.tab;
-  }
-  return undefined;
-}
 
 async function getActiveTab(): Promise<chrome.tabs.Tab> {
   const tabs = await chrome.tabs.query({
@@ -158,10 +176,10 @@ async function getCachedEvidenceOrRefresh(
   url: string,
 ): Promise<Evidence> {
   try {
-    return await readCachedEvidence(tabId, url);
+    return await cache.load(tabId, url);
   } catch {
     await refreshEvidenceCache(tabId);
-    return readCachedEvidence(tabId, url);
+    return cache.load(tabId, url);
   }
 }
 
@@ -182,63 +200,6 @@ async function refreshEvidenceCache(tabId: number): Promise<void> {
   if (response.type !== 'CACHE_REFRESHED') {
     throw new Error('Unexpected response from content script');
   }
-}
-
-async function encryptAndStoreEvidence(
-  tabId: number,
-  url: string,
-  evidence: Evidence,
-): Promise<void> {
-  const key = await getOrCreateCacheKey();
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const plaintext = new TextEncoder().encode(JSON.stringify(evidence));
-  const ciphertext = await crypto.subtle.encrypt(
-    {
-      name: 'AES-GCM',
-      iv,
-      additionalData: cacheAdditionalData(tabId),
-    },
-    key,
-    plaintext,
-  );
-
-  const record: EncryptedEvidenceRecord = {
-    version: 1,
-    url,
-    capturedAt: Date.now(),
-    iv: bytesToBase64(iv),
-    ciphertext: bytesToBase64(new Uint8Array(ciphertext)),
-  };
-
-  await chrome.storage.session.set({ [cacheRecordKey(tabId)]: record });
-}
-
-async function readCachedEvidence(tabId: number, expectedUrl: string): Promise<Evidence> {
-  const storageKey = cacheRecordKey(tabId);
-  const stored = await chrome.storage.session.get(storageKey);
-  const record = stored[storageKey] as EncryptedEvidenceRecord | undefined;
-
-  if (!record || record.version !== 1) {
-    throw new Error('No encrypted evidence cache is available for this tab');
-  }
-
-  if (record.url !== expectedUrl) {
-    await chrome.storage.session.remove(storageKey);
-    throw new Error('Encrypted evidence cache does not match the active page');
-  }
-
-  const key = await getOrCreateCacheKey();
-  const plaintext = await crypto.subtle.decrypt(
-    {
-      name: 'AES-GCM',
-      iv: base64ToBytes(record.iv),
-      additionalData: cacheAdditionalData(tabId),
-    },
-    key,
-    base64ToBytes(record.ciphertext),
-  );
-
-  return JSON.parse(new TextDecoder().decode(plaintext)) as Evidence;
 }
 
 async function getOrCreateCacheKey(): Promise<CryptoKey> {
@@ -266,27 +227,4 @@ async function getOrCreateCacheKey(): Promise<CryptoKey> {
   });
 
   return key;
-}
-
-function cacheRecordKey(tabId: number): string {
-  return `${CACHE_RECORD_PREFIX}${tabId}`;
-}
-
-function cacheAdditionalData(tabId: number): Uint8Array {
-  return new TextEncoder().encode(`${CACHE_AAD_PREFIX}${tabId}`);
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
 }

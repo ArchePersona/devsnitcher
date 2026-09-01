@@ -23,7 +23,7 @@ npm run build       # Bundle → dist/
 npm run dev         # Watch mode
 npm run typecheck   # TypeScript check
 npm run lint        # ESLint
-npm test            # Run 18 automated tests (collectors, redaction, report)
+npm test            # Run automated tests (collectors, redaction, report, encrypted cache)
 ```
 
 ## Loading in Chrome
