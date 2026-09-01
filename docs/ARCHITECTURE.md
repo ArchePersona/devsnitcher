@@ -42,6 +42,23 @@ Everything else is secondary.
 
 ---
 
+## Trust boundary
+
+`SNITCH` is a privileged extension action and must only originate from the extension UI.
+
+Page JavaScript must not be able to initiate `SNITCH`, request screenshot capture, or receive `SNITCH_RESULT` through the page-facing bridge.
+
+The page-facing bridge exists only to support evidence collection requested by the extension:
+
+```text
+Background → Content Bridge → COLLECT_EVIDENCE → Page Script
+Page Script → EVIDENCE_RESULT → Content Bridge → Background
+```
+
+The content bridge must not act as a general forwarding path from page-controlled `window.postMessage` traffic into privileged extension APIs.
+
+---
+
 ## Layers
 
 ### Popup
@@ -93,6 +110,8 @@ Responsibilities:
 - Wait for EVIDENCE_RESULT or EVIDENCE_ERROR
 - Send results back through the extension message response
 
+The content bridge must not accept page-originated `SNITCH` commands or forward page-controlled requests into privileged extension behavior.
+
 The bridge exists because extension context and page context are separated by the browser.
 
 ---
@@ -110,7 +129,7 @@ Responsibilities:
 - Capture DOM context
 - Return evidence when asked
 
-The page script should collect evidence only. It should not diagnose.
+The page script should collect evidence only. It should not diagnose or initiate privileged extension actions.
 
 ---
 
@@ -179,6 +198,8 @@ EVIDENCE_RESULT
 EVIDENCE_ERROR
 ```
 
+`SNITCH` belongs to the extension message path initiated by the popup. `COLLECT_EVIDENCE` and its result messages belong to the narrow page-evidence bridge.
+
 The preferred evidence flow is request/response, not broad forwarding through global listeners.
 
 ---
@@ -219,11 +240,12 @@ Those may be separate products later. They do not belong in the core v0.x extens
 1. Prefer lazy injection over tab-wide eager injection.
 2. Do not inject on every tab update. The tab-update injection path was removed in v0.1.1 in favor of the PING/PONG handshake with lazy fallback injection.
 3. Keep one clear evidence request path.
-4. Guard against double-injection.
-5. Keep report output deterministic.
-6. Keep redaction pure and testable.
-7. Keep collectors small.
-8. Keep the popup simple.
+4. Do not allow page-controlled messages to invoke privileged extension actions.
+5. Guard against double-injection.
+6. Keep report output deterministic.
+7. Keep redaction pure and testable.
+8. Keep collectors small.
+9. Keep the popup simple.
 
 ---
 
