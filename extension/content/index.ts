@@ -19,21 +19,6 @@ function injectPageScript(): void {
 
 injectPageScript();
 
-window.addEventListener('message', (ev: MessageEvent) => {
-  const data = ev.data as SnitchMessage | undefined;
-  if (!data || !('type' in data)) return;
-
-  if (data.type === 'SNITCH') {
-    chrome.runtime.sendMessage(data).then((response) => {
-      if (response && typeof response === 'object' && 'type' in response) {
-        window.postMessage(response, '*');
-      }
-    }).catch(() => {
-      // service worker may be asleep; ignore
-    });
-  }
-});
-
 chrome.runtime.onMessage.addListener((msg: SnitchMessage, _sender, sendResponse) => {
   if (msg?.type === 'PING') {
     sendResponse({ type: 'PONG' });
@@ -63,6 +48,7 @@ function collectEvidenceFromPage(): Promise<Evidence> {
     }, 8000);
 
     const handler = (ev: MessageEvent) => {
+      if (ev.source !== window) return;
       const data = ev.data as SnitchMessage | undefined;
       if (!data || data.type !== 'EVIDENCE_RESULT') return;
       clearTimeout(timer);
