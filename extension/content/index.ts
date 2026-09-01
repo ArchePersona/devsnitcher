@@ -25,20 +25,32 @@ chrome.runtime.onMessage.addListener((msg: SnitchMessage, _sender, sendResponse)
     return false;
   }
 
-  if (msg?.type === 'COLLECT_EVIDENCE') {
-    collectEvidenceFromPage()
-      .then((evidence) => sendResponse({ type: 'EVIDENCE_RESULT', evidence }))
+  if (msg?.type === 'REFRESH_CACHE') {
+    refreshEncryptedCache()
+      .then(() => sendResponse({ type: 'CACHE_REFRESHED' } satisfies SnitchMessage))
       .catch((error) =>
         sendResponse({
           type: 'EVIDENCE_ERROR',
           error: error instanceof Error ? error.message : String(error),
-        }),
+        } satisfies SnitchMessage),
       );
     return true;
   }
 
   return false;
 });
+
+async function refreshEncryptedCache(): Promise<void> {
+  const evidence = await collectEvidenceFromPage();
+  const response = (await chrome.runtime.sendMessage({
+    type: 'CACHE_EVIDENCE',
+    evidence,
+  } satisfies SnitchMessage)) as SnitchMessage | undefined;
+
+  if (response?.type !== 'CACHE_STORED') {
+    throw new Error('Background did not confirm evidence cache write');
+  }
+}
 
 function collectEvidenceFromPage(): Promise<Evidence> {
   return new Promise((resolve, reject) => {
