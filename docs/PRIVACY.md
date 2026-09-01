@@ -2,7 +2,7 @@
 
 DEVSnitcher is local-first.
 
-The extension captures browser evidence from the active tab, formats it into a report, and gives that report to the user through the clipboard.
+The extension captures browser evidence, maintains an encrypted browser-session cache, formats user-requested evidence into a report, and gives that report to the user through the clipboard.
 
 There is no DEVSnitcher cloud service in the v0.x extension.
 
@@ -16,7 +16,7 @@ There is no DEVSnitcher cloud service in the v0.x extension.
 - No telemetry by default
 - No AI service calls
 - No AI vendor lock-in
-- No background monitoring
+- No persistent evidence storage beyond the browser session
 
 Evidence stays in the browser unless the user pastes the report somewhere.
 
@@ -28,17 +28,53 @@ Nothing leaves the browser automatically.
 
 DEVSnitcher does not upload captured evidence to a DEVSnitcher backend.
 
-The user controls the next step by pasting the report into an AI chat, issue tracker, support thread, text file, or other destination.
+The user controls the next external step by pasting the report into an AI chat, issue tracker, support thread, text file, or other destination.
 
 ---
 
-## User-initiated capture
+## Local rolling evidence cache
+
+DEVSnitcher observes debugging evidence before the user presses SNITCH so the resulting report can include the events that led up to the problem.
+
+The extension periodically moves an evidence snapshot into extension-owned browser-session storage. Before the evidence record is written, the trusted background service worker encrypts it with AES-256-GCM.
+
+The cache is:
+
+- local to the browser
+- session-scoped
+- stored through `chrome.storage.session`
+- restricted to trusted extension contexts
+- encrypted before the evidence record is persisted
+- isolated per tab/page identity
+- removed per tab when that tab closes
+
+The encryption key remains in trusted extension context and is not provided to the webpage or content script.
+
+The cache is not uploaded anywhere by DEVSnitcher.
+
+---
+
+## User-initiated privileged capture
 
 The privileged `SNITCH` action begins from the extension popup when the user clicks **SNITCH**.
 
 Page JavaScript is not allowed to initiate `SNITCH`, request screenshot capture through that command, or receive the privileged `SNITCH_RESULT` response.
 
-The page-facing bridge exists only to return browser evidence requested by the extension during an active capture.
+SNITCH normally reads and decrypts the existing local encrypted cache. If no usable cache exists, the extension may request an immediate local refresh as fallback.
+
+Screenshot capture remains tied to the user-triggered SNITCH path.
+
+---
+
+## Evidence authenticity limitation
+
+Cache encryption protects accepted evidence while it is stored by the extension. It does not prove that every observation originally produced in page context is authentic.
+
+The current page-facing evidence bridge uses `window.postMessage`. A hostile webpage may attempt to fabricate evidence before the extension accepts and encrypts it.
+
+This is an evidence-integrity limitation, not a cloud-privacy change: the data still remains local unless the user chooses to paste the resulting report elsewhere.
+
+DEVSnitcher should not describe encrypted caching as end-to-end cryptographic provenance.
 
 ---
 
@@ -79,6 +115,8 @@ Examples:
 - Request or response previews
 
 DEVSnitcher includes redaction, but no automatic redaction system is perfect.
+
+Encryption protects the local cache representation; it does not make report output safe to share automatically.
 
 Review reports before sharing them.
 
@@ -131,21 +169,21 @@ This avoids AI vendor lock-in and keeps the extension useful even without an AI 
 
 ## User control
 
-The user remains in control of the report and of when a privileged capture begins.
+The extension may locally observe and encrypt debugging evidence before the click, but privileged report generation and optional screenshot capture remain user-triggered.
 
 The intended flow is:
 
 ```text
-User clicks SNITCH → Capture locally → Review report → Paste where chosen
+Observe locally → Encrypt session cache → User clicks SNITCH → Decrypt locally → Redact → Report → Paste where chosen
 ```
 
-That is the privacy boundary.
+Nothing is automatically uploaded by DEVSnitcher.
 
 ---
 
 ## Evidence First. AI Second.
 
-DEVSnitcher is intentionally standalone: local browser evidence capture, one SNITCH report, no backend, no telemetry, no AI calls.
+DEVSnitcher is intentionally standalone: local browser evidence capture, encrypted browser-session cache, one user-triggered SNITCH report, no backend, no telemetry, no AI calls.
 
 For deeper evidence reconstruction, the same principle continues in **SHERLOCK**: files, conversations, timelines, source artifacts, provenance, and investigation reports.
 
