@@ -1,6 +1,8 @@
 import type { Evidence, SnitchMessage } from '../../shared/types';
 
 const PAGE_SCRIPT_SRC = chrome.runtime.getURL('page-script.js');
+const CACHE_REFRESH_INTERVAL_MS = 2000;
+let cacheRefreshInFlight = false;
 
 function injectPageScript(): void {
   try {
@@ -18,6 +20,8 @@ function injectPageScript(): void {
 }
 
 injectPageScript();
+window.setTimeout(queueCacheRefresh, 250);
+window.setInterval(queueCacheRefresh, CACHE_REFRESH_INTERVAL_MS);
 
 chrome.runtime.onMessage.addListener((msg: SnitchMessage, _sender, sendResponse) => {
   if (msg?.type === 'PING') {
@@ -39,6 +43,16 @@ chrome.runtime.onMessage.addListener((msg: SnitchMessage, _sender, sendResponse)
 
   return false;
 });
+
+function queueCacheRefresh(): void {
+  if (cacheRefreshInFlight) return;
+  cacheRefreshInFlight = true;
+  void refreshEncryptedCache()
+    .catch(() => undefined)
+    .finally(() => {
+      cacheRefreshInFlight = false;
+    });
+}
 
 async function refreshEncryptedCache(): Promise<void> {
   const evidence = await collectEvidenceFromPage();
