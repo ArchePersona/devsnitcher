@@ -25,8 +25,11 @@ For the encrypted cache, focused verification should establish at minimum:
 
 - plaintext evidence is not used as the persisted cache representation
 - AES-GCM encryption/decryption round-trip succeeds
-- altered authenticated ciphertext fails decryption
+- separate writes use fresh IVs
+- altered authenticated ciphertext or IV fails decryption
 - a cache record bound to the wrong tab/page identity is rejected
+- a stale URL record is rejected
+- malformed cache-write payloads are rejected
 - SNITCH can consume a valid encrypted cached record
 
 Keep this coverage proportional. Do not build a large mock framework solely to exercise browser APIs that are better proven manually.
@@ -114,7 +117,8 @@ Verify the following in a development build:
 3. Click **SNITCH** and confirm the pre-click evidence appears in the report.
 4. Confirm the extension uses `chrome.storage.session` for the cache and that the evidence record is ciphertext plus required metadata rather than a plaintext `Evidence` object.
 5. Confirm ordinary page JavaScript cannot read the cache or encryption key.
-6. Close the tab and confirm its per-tab cache record is removed.
+6. Navigate the tab to a different page and confirm the old per-tab cache record is cleared/rejected.
+7. Close the tab and confirm its per-tab cache record is removed.
 
 The cache key must not appear in page globals, DOM attributes, page messages, report output, or content-script state.
 
@@ -124,7 +128,7 @@ AES-GCM authentication failure should be treated as an unusable cache record, no
 
 ## Trust-boundary regression proof
 
-The page must not be able to invoke the privileged `SNITCH` flow through `window.postMessage`.
+The page must not be able to invoke the privileged `SNITCH` flow through `window.postMessage` or through a tab-relayed runtime message.
 
 From page JavaScript, attempting to post:
 
@@ -140,9 +144,9 @@ must not:
 - produce `SNITCH_RESULT`
 - expose a screenshot data URL or generated report back to the page
 
-The normal popup button must continue to initiate `SNITCH` successfully.
+The background service worker must also refuse `SNITCH` when the runtime sender has a tab. The normal popup button must continue to initiate `SNITCH` successfully.
 
-This regression proof protects the privileged-action boundary between untrusted page JavaScript and extension behavior.
+This regression proof protects the privileged-action boundary between untrusted page/tab contexts and extension behavior.
 
 ---
 
@@ -239,8 +243,9 @@ Checks:
 - DOM context captured
 - Redaction checked
 - Encrypted rolling cache verified
+- Navigation clears/rejects stale cache
 - Clipboard output verified
-- Page-originated SNITCH blocked
+- Page-originated and tab-relayed SNITCH blocked
 - Page-evidence authenticity limitation acknowledged separately
 ```
 
