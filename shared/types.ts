@@ -70,6 +70,10 @@ export type SnitchMessage =
   | { type: 'COLLECT_EVIDENCE' }
   | { type: 'EVIDENCE_RESULT'; evidence: Evidence }
   | { type: 'EVIDENCE_ERROR'; error: string }
+  | { type: 'CACHE_EVIDENCE'; evidence: Evidence }
+  | { type: 'CACHE_STORED' }
+  | { type: 'REFRESH_CACHE' }
+  | { type: 'CACHE_REFRESHED' }
   | { type: 'PING' }
   | { type: 'PONG' }
   | { type: 'SNITCH'; userNotes: string; screenshot: boolean }
