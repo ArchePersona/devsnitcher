@@ -30,16 +30,17 @@ Everything else is secondary.
 1. The page script observes browser evidence in page context.
 2. The isolated content bridge periodically requests the current evidence snapshot.
 3. The content bridge sends accepted evidence to the background service worker through the extension runtime.
-4. Background encrypts the evidence with AES-256-GCM and writes only ciphertext plus required metadata to `chrome.storage.session`.
+4. Background validates the evidence payload, encrypts valid evidence with AES-256-GCM, and writes only ciphertext plus required metadata to `chrome.storage.session`.
 5. User opens the popup, optionally enters a short description, and clicks **SNITCH**.
 6. Popup sends `SNITCH` to the background service worker.
-7. Background resolves the intended tab and ensures the content script is present.
-8. Background prefers the existing encrypted cache; if no usable cache exists, it may request one immediate refresh.
-9. Background decrypts the cache inside trusted extension context.
-10. Background optionally captures the user-requested screenshot.
-11. Background applies redaction and builds the report.
-12. Popup writes the report to the clipboard.
-13. User pastes the report into AI or another debugging channel.
+7. Background refuses tab-relayed `SNITCH` messages and resolves the active tab only for the popup-originated action.
+8. Background ensures the content script is present.
+9. Background prefers the existing encrypted cache; if no usable cache exists, it may request one immediate refresh.
+10. Background decrypts the cache inside trusted extension context and validates the decrypted evidence shape.
+11. Background optionally captures the user-requested screenshot.
+12. Background applies redaction and builds the report.
+13. Popup writes the report to the clipboard.
+14. User pastes the report into AI or another debugging channel.
 
 ---
 
@@ -51,17 +52,17 @@ DEVSnitcher separates three security concerns.
 
 `SNITCH` is a privileged extension action and must only originate from the extension UI.
 
-Page JavaScript must not be able to initiate `SNITCH`, request screenshot capture, or receive `SNITCH_RESULT` through the page-facing bridge.
+The background service worker enforces this boundary directly: messages carrying `SNITCH` with a tab sender are refused. Page JavaScript must not be able to initiate `SNITCH`, request screenshot capture, or receive `SNITCH_RESULT` through the page-facing bridge.
 
 The content bridge must not act as a general forwarding path from page-controlled `window.postMessage` traffic into privileged extension APIs.
 
 ### Encrypted cache confidentiality and integrity
 
-Accepted evidence is cached only after it reaches the trusted background service worker.
+Accepted evidence is cached only after it reaches the trusted background service worker and passes evidence-shape validation.
 
 Background encrypts cache records with AES-256-GCM before storage. The key remains in trusted extension session storage, cache storage is restricted to `TRUSTED_CONTEXTS`, and each write uses a fresh random IV. Authenticated additional data binds the ciphertext to its tab cache identity.
 
-The page does not receive the cache key or decrypted cache contents.
+The page does not receive the cache key or decrypted cache contents. Malformed cache-write payloads are rejected, authenticated tampering causes decryption failure, and decrypted payloads are shape-validated before use.
 
 ### Page-evidence authenticity
 
@@ -98,14 +99,16 @@ The background service worker owns privileged coordination and the encrypted cac
 
 Responsibilities:
 
-- Resolve the active/source tab
+- Enforce popup-only `SNITCH` authorization
+- Resolve the active tab for the popup action
 - Reject unsupported browser-internal pages
 - Ping or inject the content script when needed
 - Accept cache writes only through the expected extension runtime path
+- Validate cache-write evidence payloads before encryption
 - Generate/import the session cache key
 - Encrypt accepted evidence with AES-256-GCM before storage
-- Decrypt valid tab-bound cache records for SNITCH
-- Remove per-tab cache records when tabs close
+- Decrypt and validate valid tab-bound cache records for SNITCH
+- Remove per-tab cache records when tabs close or navigate/load a new page
 - Capture screenshot evidence when explicitly requested by SNITCH
 - Apply redaction
 - Build the report payload
@@ -160,8 +163,11 @@ Current properties:
 - fresh 12-byte random IV per encryption
 - tab-bound authenticated additional data
 - per-tab cache records
+- evidence-shape validation before storage and after decryption
+- malformed cache writes rejected
 - stale URL mismatch rejected
 - per-tab record removed when the tab closes
+- per-tab record cleared when the tab navigates or begins loading a new page
 - rolling refresh approximately every two seconds
 - SNITCH prefers a valid existing cache and refreshes only as fallback
 
@@ -240,7 +246,7 @@ REFRESH_CACHE
 CACHE_REFRESHED
 ```
 
-`SNITCH` belongs only to the extension message path initiated by the popup. Cache messages belong to the extension runtime path. `COLLECT_EVIDENCE` and `EVIDENCE_RESULT` belong to the narrow page-evidence bridge.
+`SNITCH` belongs only to the extension message path initiated by the popup and is rejected when relayed from a tab. Cache messages belong to the extension runtime path. `COLLECT_EVIDENCE` and `EVIDENCE_RESULT` belong to the narrow page-evidence bridge.
 
 ---
 
@@ -278,16 +284,17 @@ Those may be separate products later. They do not belong in the core v0.x extens
 
 ## Stability rules
 
-1. Do not allow page-controlled messages to invoke privileged extension actions.
-2. Encrypt accepted cached evidence before storage.
-3. Keep cache keys and decrypted cache contents out of page context.
-4. Keep cache records isolated by tab/page identity.
-5. Do not describe encrypted caching as proof of page-evidence provenance.
-6. Guard against double-injection and overlapping refreshes.
-7. Keep report output deterministic.
-8. Keep redaction pure and testable.
-9. Keep collectors small.
-10. Keep the popup simple.
+1. Do not allow page-controlled or tab-relayed messages to invoke privileged extension actions.
+2. Validate evidence before accepting a cache write.
+3. Encrypt accepted cached evidence before storage.
+4. Keep cache keys and decrypted cache contents out of page context.
+5. Keep cache records isolated by tab/page identity and clear them on tab close/navigation.
+6. Do not describe encrypted caching as proof of page-evidence provenance.
+7. Guard against double-injection and overlapping refreshes.
+8. Keep report output deterministic.
+9. Keep redaction pure and testable.
+10. Keep collectors small.
+11. Keep the popup simple.
 
 ---
 
