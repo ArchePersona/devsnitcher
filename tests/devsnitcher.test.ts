@@ -315,6 +315,62 @@ describe('redaction', () => {
       'https://x.test/path#plain=value',
     );
   });
+
+  test('fragment redaction preserves encoded safe values byte-for-byte (BUG A)', () => {
+    // Percent-encoding of non-sensitive fragment values is never de-encoded.
+    assert.equal(
+      redactUrl('https://x.test/path#token=z&continue=https%3A%2F%2Fevil.com').url,
+      'https://x.test/path#token=[REDACTED]&continue=https%3A%2F%2Fevil.com',
+    );
+    // %26 inside a value must not be re-interpreted as a parameter separator.
+    assert.equal(
+      redactUrl('https://x.test/path#foo=a%26b&token=z').url,
+      'https://x.test/path#foo=a%26b&token=[REDACTED]',
+    );
+    // %20 inside a value must remain encoded.
+    assert.equal(
+      redactUrl('https://x.test/path#msg=hello%20world&sid=9').url,
+      'https://x.test/path#msg=hello%20world&sid=[REDACTED]',
+    );
+    // Mixed sensitive/non-sensitive params: safe values untouched, in order.
+    assert.equal(
+      redactUrl('https://x.test/path#state=xyz&next=c%26b&code=z&q=1%202').url,
+      'https://x.test/path#state=xyz&next=c%26b&code=[REDACTED]&q=1%202',
+    );
+    // Ordinary anchors (no `=`) remain unchanged even alongside sensitive params.
+    assert.equal(
+      redactUrl('https://x.test/path#features.top=1&section-name&token=z').url,
+      'https://x.test/path#features.top=1&section-name&token=[REDACTED]',
+    );
+  });
+
+  test('query redaction preserves encoded safe values without double-encoding (BUG B)', () => {
+    // Encoded redirect URL remains byte-for-byte unchanged when a neighbor redacts.
+    assert.equal(
+      redactUrl('https://x.test/path?redirect=https%3A%2F%2Fevil.com&token=z').url,
+      'https://x.test/path?redirect=https%3A%2F%2Fevil.com&token=[REDACTED]',
+    );
+    // %26 and %20 stay encoded, not re-encoded or decoded.
+    assert.equal(
+      redactUrl('https://x.test/path?x=%26y&msg=a%20b&token=z').url,
+      'https://x.test/path?x=%26y&msg=a%20b&token=[REDACTED]',
+    );
+    // Duplicate safe params remain present and ordered.
+    assert.equal(
+      redactUrl('https://x.test/path?a=1&a=2&token=z').url,
+      'https://x.test/path?a=1&a=2&token=[REDACTED]',
+    );
+    // A query with no fragment must not gain a trailing `#`.
+    assert.equal(
+      redactUrl('https://x.test/path?token=z').url,
+      'https://x.test/path?token=[REDACTED]',
+    );
+    // Sensitive values are redacted.
+    assert.equal(
+      redactUrl('https://api.example.com/data?token=sk-1234567890abcdef').url,
+      'https://api.example.com/data?token=[REDACTED]',
+    );
+  });
 });
 
 describe('report builder', () => {
@@ -783,6 +839,65 @@ describe('DEVPEEPER Chromium observation foundation', () => {
     );
   });
 
+  test('detach during startup invalidates the attempt and start() finishes non-running (BUG D)', async () => {
+    const detachCalls: DebuggerTarget[] = [];
+    const detachListeners: Array<(target: DebuggerTarget, reason: string) => void> = [];
+    let releaseEnable: (() => void) | null = null;
+    const enableGate = new Promise<void>((resolve) => {
+      releaseEnable = resolve;
+    });
+
+    const transport: DebuggerTransport = {
+      attach: async () => undefined,
+      detach: async (target) => {
+        detachCalls.push(target);
+      },
+      sendCommand: async (_target, method) => {
+        if (method === 'Runtime.enable') await enableGate; // hold the enable pending
+        return {};
+      },
+      onEvent: () => () => undefined,
+      onDetach: (listener) => {
+        detachListeners.push(listener);
+        return () => {
+          const i = detachListeners.indexOf(listener);
+          if (i >= 0) detachListeners.splice(i, 1);
+        };
+      },
+    };
+
+    const observer = new ChromiumObserver(5, transport);
+
+    const startPromise = observer.start();
+    // Let start() progress: attach resolves, listeners subscribe, and Page.enable
+    // resolves before Runtime.enable blocks on the gate.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Fire the matching detach while Runtime.enable is still pending.
+    for (const listener of [...detachListeners]) listener({ tabId: 5 }, 'crashed');
+    // Now let the pending enable resolve and start() finish.
+    releaseEnable!();
+    await startPromise;
+
+    assert.equal(
+      observer.isRunning(),
+      false,
+      'a start invalidated by an in-flight detach must not end running',
+    );
+    assert.equal(
+      detachCalls.length,
+      0,
+      'no second detach is required to correct state after an in-flight detach',
+    );
+
+    // A later explicit retry is still possible: the invalidation latch resets.
+    await observer.start();
+    assert.equal(
+      observer.isRunning(),
+      true,
+      'a retry after an invalidated attempt must be able to start cleanly',
+    );
+  });
+
   test('accepts instrumentation only for the active attachment tab', async () => {
     const transport = makeTransport();
     const observer = new ChromiumObserver(3, transport);
@@ -971,6 +1086,29 @@ describe('DEVPEEPER active-tab observation controller', () => {
     assert.equal(controller.isRunning(), false);
     const netAttached = transport.attachCalls.length - transport.detachCalls.length;
     assert.equal(netAttached, 0, 'failed startup must detach (nothing left attached)');
+  });
+
+  test('awaiting follow() waits for delayed startup before evidence is readable (BUG C)', async () => {
+    const { transport, controller } = makeController();
+    transport.attachLatencyMs = 40;
+
+    // A SNITCH-equivalent read must not run before the transition settles: while
+    // the follow is still in flight, no evidence is readable from the observer.
+    const pending = controller.follow({ id: 7, url: 'https://e.example' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(
+      controller.liveFor(7),
+      null,
+      'evidence must not be readable while observer startup is still in flight',
+    );
+
+    // After the transition settles, the observer is live and evidence is readable.
+    await pending;
+    assert.ok(
+      controller.liveFor(7),
+      'awaiting the follow transition yields a live, evidence-ready observer',
+    );
+    assert.equal(controller.liveFor(7)?.getConsoleEntries().length, 0);
   });
 });
 

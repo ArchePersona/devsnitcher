@@ -58,6 +58,14 @@ export const JSError_MAX_ENTRIES = 50;
  */
 export class ChromiumObserver implements ObservationAdapter {
   private running = false;
+  /**
+   * Set when a matching debugger detach fires while a `start()` is still in
+   * flight. `start()` checks it just before promoting to `running` and, if set,
+   * finishes non-running so a session Chrome already detached is never
+   * advertised as active. It is reset at the start of every `start()` attempt,
+   * keeping later explicit retries possible.
+   */
+  private startInvalidated = false;
   private readonly buffer: ChromiumObservation[] = [];
   private readonly consoleEntries: ConsoleEntry[] = [];
   private readonly jsErrorEntries: JsErrorEntry[] = [];
@@ -80,6 +88,10 @@ export class ChromiumObserver implements ObservationAdapter {
   async start(): Promise<void> {
     if (this.running) return;
 
+    // Reset the invalidation latch for this attempt. It is flipped back on if a
+    // matching detach arrives while initialization is still in flight.
+    this.startInvalidated = false;
+
     await this.transport.attach(this.target, PROTOCOL_VERSION);
     this.unsubscribers.push(
       this.transport.onEvent((source, method, params) =>
@@ -95,8 +107,8 @@ export class ChromiumObserver implements ObservationAdapter {
     } catch (error) {
       // Transactional rollback: a partial startup must not leak the debugger
       // session, registered listeners, or session state. Best-effort cleanup
-      // must not mask the original startup error, and a failed start must leave
-      // this observer reusable for a later clean retry.
+      // must not mask the original startup error, and a failed start must
+      // leave this observer reusable for a later clean retry.
       this.running = false;
       for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
       this.clearSession();
@@ -107,6 +119,11 @@ export class ChromiumObserver implements ObservationAdapter {
       }
       throw error;
     }
+
+    // A matching detach during initialization permanently invalidates this
+    // attempt: `handleDetach` already set `running = false`, cleared state and
+    // unsubscribed listeners, so do NOT promote a dead session back to running.
+    if (this.startInvalidated) return;
 
     this.running = true;
   }
@@ -211,6 +228,10 @@ export class ChromiumObserver implements ObservationAdapter {
     // Chrome detached this session (tab closed, DevTools opened, etc.). The
     // observer is no longer active and stale buffered observations must not be
     // presented as if they were from a live session.
+    // If this arrives while a `start()` is still initializing, latch the
+    // invalidation so `start()` does not promote the dead session back to
+    // running after its enable commands resolve.
+    this.startInvalidated = true;
     this.running = false;
     this.clearSession();
     for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();

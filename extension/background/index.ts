@@ -126,8 +126,15 @@ chrome.runtime.onMessage.addListener(
         const tab = await getActiveTab();
 
         // Establish the DEVPEEPER active-tab Chromium observation lifecycle.
-        // Best-effort and isolated so it never blocks or fails SNITCH.
-        void activeObserver.follow(tab).catch(() => undefined);
+        // Await the serialized follow transition so browser-observed evidence is
+        // read only after the observer has settled (not while a start is still in
+        // flight). A startup failure must not block SNITCH itself, so it is
+        // swallowed here; browser evidence will simply be empty for that session.
+        try {
+          await activeObserver.follow(tab);
+        } catch {
+          // Observation startup failed; continue SNITCH with empty browser evidence.
+        }
 
         await ensureContentScript(tab.id!);
         const evidence = await getCachedEvidenceOrRefresh(tab.id!, tab.url!);
