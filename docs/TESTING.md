@@ -50,7 +50,7 @@ For the DEVPEEPER Chromium observation foundation, focused verification should e
 
 For DEVPEEPER-003 browser-observed console + runtime errors, focused verification should establish at minimum:
 
-- `Network.enable` is added together with `Page.enable` and `Runtime.enable`
+- `Runtime.enable` is added alongside the existing `Page.enable`, while `Network.enable` remains absent for DEVPEEPER-003.
 - supported `Runtime.consoleAPICalled` events normalize correctly (level mapping, bounded message formatting, stack)
 - unsupported console event types are ignored
 - `Runtime.exceptionThrown` normalizes without invented provenance and without synthesized `promise_rejection` classification
@@ -171,7 +171,7 @@ This proves the bounded return path is Chrome-authenticated, not page-authored.
 
 This milestone establishes the active-tab Chromium/CDP attachment lifecycle. Because automated tests cannot drive a live `chrome.debugger` session in the repo test environment, they verify the lifecycle/provenance boundary against a narrow mocked transport; this manual proof exercises the real debugger surface.
 
-1. Load the extension, open a normal tab on `http://localhost:8088/test.html`, and click **SNITCH** once so the background attaches the Chromium observer to the active tab.
+1. Load the extension and open/activate a supported normal tab on `http://localhost:8088/test.html`. Activating the tab causes the background to establish the active-tab Chromium observer automatically; no SNITCH click is required.
 2. Confirm the extension requests the `debugger` permission and attaches only to the active tab (inspect `chrome://extensions`, open the service worker, and observe `chrome.debugger.onEvent` registration / `Page.enable`).
 3. Reload or navigate the tab and confirm the DEVPEEPER observer receives a `Page.frameNavigated` event and preserves browser provenance (`tabId`, `frameId`, `loaderId`).
 4. Open Chrome DevTools for the attached tab (or close the tab) and confirm the observer reports not running after Chrome detaches it, with no stale observations presented as live.
@@ -240,7 +240,7 @@ Do **not** use successful encrypted-cache or SNITCH-boundary tests as proof that
 
 Environment, focused DOM and current selection are browser-mediated: acquired through `chrome.scripting.executeScript` and returned in Chrome's `InjectionResult`, so a page calling `window.postMessage` cannot forge those bounded observations. Chrome authenticates the transport path; it does not make the underlying page-controlled DOM/focus state truthful.
 
-Console, runtime-error and network evidence all travel browser-observed through the active-tab Chromium session; there is no page-facing `window.postMessage` `COLLECT_EVIDENCE`/`EVIDENCE_RESULT` evidence bus. A hostile page script cannot fabricate console, network or error evidence, because DEVSnitcher injects no MAIN-world collector and no authoritative evidence originates from a page-authored message.
+Console, runtime-error and network evidence all travel browser-observed through the active-tab Chromium session; there is no page-facing `window.postMessage` `COLLECT_EVIDENCE`/`EVIDENCE_RESULT` evidence bus, so a page cannot forge or substitute DEVSnitch console/runtime/network evidence through a page-authored evidence protocol. Those observations enter DEVSnitch only through the active-tab Chromium/CDP path. However, the page can still deliberately cause console output, runtime failures, or network activity that Chromium legitimately observes. Browser-observed provenance proves the acquisition path, not the semantic truth or innocence of the page behavior.
 
 The encrypted cache begins protecting evidence only after that acceptance point.
 
