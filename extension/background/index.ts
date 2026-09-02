@@ -2,7 +2,7 @@ import { redactEvidence } from '../../redaction/index';
 import { buildMarkdownReport } from '../../report/markdown';
 import { captureScreenshot } from '../../collectors/screenshot';
 import { EvidenceCache, base64ToBytes, bytesToBase64, isEvidenceShape } from './cache';
-import { ChromiumObserver } from '../../devpeeper/chromium';
+import { ActiveTabObserverController } from '../../devpeeper/active-observer';
 import { chromeDebuggerTransport } from '../../devpeeper/debugger-transport';
 import type { ConsoleEntry, Evidence, JsErrorEntry, NetworkEntry, SnitchMessage } from '../../shared/types';
 
@@ -14,7 +14,14 @@ const CACHE_KEY_STORAGE = 'devsnitcher:evidence-cache-key:v1';
 // observed console/runtime-error evidence for the current active-tab session.
 // That accumulated evidence is the authoritative console/error source at
 // SNITCH time; page-authored console/jsErrors are ignored.
-let chromiumObserver: ChromiumObserver | null = null;
+//
+// The controller serializes every start/stop transition so concurrent
+// activation events cannot overlap in-flight attach/detach and leak multiple
+// debugger sessions (see devpeeper/active-observer.ts).
+const activeObserver = new ActiveTabObserverController(
+  () => chromeDebuggerTransport(),
+  isSupportedTabUrl,
+);
 
 chrome.storage.session
   .setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
@@ -41,16 +48,13 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
   // active-tab observer exists at a time; a tab change detaches the prior one.
   void chrome.tabs
     .get(activeInfo.tabId)
-    .then((tab) => startActiveTabObservation(tab).catch(() => undefined))
+    .then((tab) => activeObserver.follow(tab).catch(() => undefined))
     .catch(() => undefined);
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   void cache.clear(tabId);
-  if (chromiumObserver?.attachedTabId === tabId) {
-    void chromiumObserver.stop().catch(() => undefined);
-    chromiumObserver = null;
-  }
+  void activeObserver.handleRemoved(tabId);
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
@@ -123,7 +127,7 @@ chrome.runtime.onMessage.addListener(
 
         // Establish the DEVPEEPER active-tab Chromium observation lifecycle.
         // Best-effort and isolated so it never blocks or fails SNITCH.
-        void startActiveTabObservation(tab).catch(() => undefined);
+        void activeObserver.follow(tab).catch(() => undefined);
 
         await ensureContentScript(tab.id!);
         const evidence = await getCachedEvidenceOrRefresh(tab.id!, tab.url!);
@@ -200,30 +204,6 @@ function isSupportedTabUrl(url: string): boolean {
   );
 }
 
-async function startActiveTabObservation(tab: chrome.tabs.Tab): Promise<void> {
-  // Browser-internal/unsupported pages are excluded from observation. If the
-  // active tab is unsupported, detach any current observer rather than observe it.
-  if (!tab.id || !tab.url || !isSupportedTabUrl(tab.url)) {
-    if (chromiumObserver?.isRunning()) {
-      await chromiumObserver.stop();
-    }
-    chromiumObserver = null;
-    return;
-  }
-
-  const tabId = tab.id;
-  if (chromiumObserver?.isRunning() && chromiumObserver.attachedTabId === tabId) return;
-
-  if (chromiumObserver?.isRunning()) {
-    await chromiumObserver.stop();
-    chromiumObserver = null;
-  }
-
-  const observer = new ChromiumObserver(tabId, chromeDebuggerTransport());
-  chromiumObserver = observer;
-  await observer.start();
-}
-
 /**
  * Browser-observed console/runtime-error/network evidence from the active-tab
  * Chromium session. Empty when there is no live observer bound to `tabId`, so
@@ -234,11 +214,12 @@ async function currentBrowserObservedEvidence(tabId: number): Promise<{
   jsErrors: JsErrorEntry[];
   network: NetworkEntry[];
 }> {
-  if (chromiumObserver?.isRunning() && chromiumObserver.attachedTabId === tabId) {
+  const observer = activeObserver.liveFor(tabId);
+  if (observer) {
     return {
-      console: chromiumObserver.getConsoleEntries(),
-      jsErrors: chromiumObserver.getJsErrorEntries(),
-      network: await chromiumObserver.getNetworkEntries(),
+      console: observer.getConsoleEntries(),
+      jsErrors: observer.getJsErrorEntries(),
+      network: await observer.getNetworkEntries(),
     };
   }
   return { console: [], jsErrors: [], network: [] };

@@ -87,9 +87,27 @@ export class ChromiumObserver implements ObservationAdapter {
       ),
       this.transport.onDetach((source, reason) => this.handleDetach(source, reason)),
     );
-    await this.transport.sendCommand(this.target, 'Page.enable');
-    await this.transport.sendCommand(this.target, 'Runtime.enable');
-    await this.transport.sendCommand(this.target, 'Network.enable');
+
+    try {
+      await this.transport.sendCommand(this.target, 'Page.enable');
+      await this.transport.sendCommand(this.target, 'Runtime.enable');
+      await this.transport.sendCommand(this.target, 'Network.enable');
+    } catch (error) {
+      // Transactional rollback: a partial startup must not leak the debugger
+      // session, registered listeners, or session state. Best-effort cleanup
+      // must not mask the original startup error, and a failed start must leave
+      // this observer reusable for a later clean retry.
+      this.running = false;
+      for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
+      this.clearSession();
+      try {
+        await this.transport.detach(this.target);
+      } catch {
+        // Detach failure is secondary; preserve the original startup error.
+      }
+      throw error;
+    }
+
     this.running = true;
   }
 

@@ -24,7 +24,7 @@ export function redactNetworkEntry(entry: NetworkEntry): NetworkEntry {
 export function redactConsoleEntry(entry: ConsoleEntry): ConsoleEntry {
   return {
     ...entry,
-    message: redactTokens(entry.message),
+    message: redactText(entry.message),
     stack: entry.stack ? redactStack(entry.stack) : undefined,
   };
 }
@@ -32,7 +32,7 @@ export function redactConsoleEntry(entry: ConsoleEntry): ConsoleEntry {
 export function redactJsErrorEntry(entry: JsErrorEntry): JsErrorEntry {
   return {
     ...entry,
-    message: redactTokens(entry.message),
+    message: redactText(entry.message),
     stack: entry.stack ? redactStack(entry.stack) : entry.stack,
   };
 }
@@ -40,7 +40,7 @@ export function redactJsErrorEntry(entry: JsErrorEntry): JsErrorEntry {
 export function redactDomContext(dom: DomContext): DomContext {
   return {
     ...dom,
-    html: redactTokens(dom.html),
+    html: redactText(dom.html),
     className: dom.className,
   };
 }

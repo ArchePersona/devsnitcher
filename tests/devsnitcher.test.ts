@@ -61,7 +61,14 @@ setGlobal(
 
 // Now import collectors and report modules
 import { captureScreenshot } from '../collectors/screenshot';
-import { redactEvidence, redactCookieString } from '../redaction/index';
+import {
+  redactEvidence,
+  redactCookieString,
+  redactConsoleEntry,
+  redactJsErrorEntry,
+  redactDomContext,
+  redactUrl,
+} from '../redaction/index';
 import { buildMarkdownReport } from '../report/markdown';
 import { buildJsonReport } from '../report/json';
 import {
@@ -77,6 +84,7 @@ import {
   type InjectionResultLike,
 } from '../devpeeper/observation';
 import { ChromiumObserver } from '../devpeeper/chromium';
+import { ActiveTabObserverController } from '../devpeeper/active-observer';
 import type { DebuggerTarget, DebuggerTransport } from '../devpeeper/debugger-transport';
 import { normalizeConsoleApi, normalizeExceptionThrown } from '../devpeeper/runtime-normalizer';
 import type { Evidence } from '../shared/types';
@@ -249,6 +257,63 @@ describe('redaction', () => {
     assert.ok(result.includes('jwt=[REDACTED]'));
     assert.ok(result.includes('theme=dark'));
     assert.ok(result.includes('lang=en'));
+  });
+
+  test('console, DOM HTML and JS error messages redact URL query secrets (BUG 3)', () => {
+    const consoleEntry = redactConsoleEntry({
+      level: 'log',
+      message: 'GET https://api.example.com/data?token=secret123',
+      timestamp: 1,
+    });
+    assert.ok(consoleEntry.message.includes('token=[REDACTED]'));
+    assert.ok(!consoleEntry.message.includes('secret123'));
+
+    const dom = redactDomContext({
+      selector: 'div',
+      tagName: 'DIV',
+      className: 'x',
+      isFocused: false,
+      html: '<a href="https://api.example.com/x?access_token=abc123">go</a>',
+    });
+    assert.ok(dom.html.includes('access_token=[REDACTED]'));
+    assert.ok(!dom.html.includes('abc123'));
+
+    const jsError = redactJsErrorEntry({
+      type: 'unhandled_exception',
+      message: 'failed to load https://api.example.com/y?password=hunter2',
+      stack: 'at fn (https://api.example.com/z?code=qwerty)',
+    });
+    assert.ok(jsError.message.includes('password=[REDACTED]'));
+    assert.ok(!jsError.message.includes('hunter2'));
+    assert.ok(jsError.stack.includes('code=[REDACTED]'));
+    assert.ok(!jsError.stack.includes('qwerty'));
+  });
+
+  test('sensitive fragment parameters are redacted, safe fragments preserved (BUG 4)', () => {
+    assert.equal(
+      redactUrl('https://x.test/path#access_token=secret').url,
+      'https://x.test/path#access_token=[REDACTED]',
+    );
+    assert.equal(
+      redactUrl('https://x.test/path#token=abc&state=xyz').url,
+      'https://x.test/path#token=[REDACTED]&state=xyz',
+    );
+    assert.equal(
+      redactUrl('https://x.test/path#foo=bar&sid=1').url,
+      'https://x.test/path#foo=bar&sid=[REDACTED]',
+    );
+    assert.equal(
+      redactUrl('https://x.test/path#section-name').url,
+      'https://x.test/path#section-name',
+    );
+    assert.equal(
+      redactUrl('https://x.test/path?a=1#token=zzz').url,
+      'https://x.test/path?a=1#token=[REDACTED]',
+    );
+    assert.equal(
+      redactUrl('https://x.test/path#plain=value').url,
+      'https://x.test/path#plain=value',
+    );
   });
 });
 
@@ -665,6 +730,59 @@ describe('DEVPEEPER Chromium observation foundation', () => {
     );
   });
 
+  test('transactional start: partial enable failure detaches, unsubscribes, and stays reusable', async () => {
+    const detachCalls: DebuggerTarget[] = [];
+    let subscribed = 0;
+    let unsubscribed = 0;
+    const failOn = new Set<string>(['Runtime.enable']);
+
+    const transport: DebuggerTransport = {
+      attach: async () => undefined,
+      detach: async (target) => {
+        detachCalls.push(target);
+      },
+      sendCommand: async (_target, method) => {
+        if (failOn.has(method)) throw new Error(`enable failed: ${method}`);
+        return {};
+      },
+      onEvent: () => {
+        subscribed += 1;
+        return () => {
+          unsubscribed += 1;
+        };
+      },
+      onDetach: () => {
+        subscribed += 1;
+        return () => {
+          unsubscribed += 1;
+        };
+      },
+    };
+
+    const observer = new ChromiumObserver(5, transport);
+
+    // First start fails part-way through enabling domains.
+    await assert.rejects(() => observer.start(), /enable failed: Runtime\.enable/);
+    assert.equal(observer.isRunning(), false, 'observer must not be running after failed start');
+    assert.equal(detachCalls.length, 1, 'failed start must detach the debugger target');
+    assert.deepEqual(detachCalls[0], { tabId: 5 });
+    assert.equal(
+      subscribed - unsubscribed,
+      0,
+      'all listeners from the failed attempt must be unsubscribed',
+    );
+
+    // A retry must not accumulate more active listeners than a clean start.
+    await assert.rejects(() => observer.start(), /enable failed: Runtime\.enable/);
+    assert.equal(observer.isRunning(), false);
+    assert.equal(detachCalls.length, 2, 'each failed attempt detaches again (reusable)');
+    assert.equal(
+      subscribed - unsubscribed,
+      0,
+      'retry must not double the active listener count',
+    );
+  });
+
   test('accepts instrumentation only for the active attachment tab', async () => {
     const transport = makeTransport();
     const observer = new ChromiumObserver(3, transport);
@@ -763,6 +881,99 @@ describe('DEVPEEPER Chromium observation foundation', () => {
     assert.equal(transport.detachCalls.length, 1);
   });
 });
+
+describe('DEVPEEPER active-tab observation controller', () => {
+  interface MockTransport extends DebuggerTransport {
+    attachCalls: DebuggerTarget[];
+    detachCalls: DebuggerTarget[];
+    attachLatencyMs: number;
+    failCommands: Set<string>;
+  }
+
+  function makeControllerTransport(): MockTransport {
+    const transport: MockTransport = {
+      attachCalls: [],
+      detachCalls: [],
+      attachLatencyMs: 0,
+      failCommands: new Set(),
+      attach: async (target) => {
+        transport.attachCalls.push(target);
+        if (transport.attachLatencyMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, transport.attachLatencyMs));
+        }
+      },
+      detach: async (target) => {
+        transport.detachCalls.push(target);
+      },
+      sendCommand: async (_target, method) => {
+        if (transport.failCommands.has(method)) throw new Error(`command failed: ${method}`);
+        return {};
+      },
+      onEvent: () => () => undefined,
+      onDetach: () => () => undefined,
+    };
+    return transport;
+  }
+
+  function makeController() {
+    const transport = makeControllerTransport();
+    const controller = new ActiveTabObserverController(() => transport, () => true);
+    return { transport, controller };
+  }
+
+  test('concurrent activation does not leak multiple debugger attachments', async () => {
+    const { transport, controller } = makeController();
+    transport.attachLatencyMs = 25;
+
+    // Request tab A, then request tab B before A's startup finishes.
+    const first = controller.follow({ id: 1, url: 'https://a.example' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = controller.follow({ id: 2, url: 'https://b.example' });
+    await Promise.all([first, second.catch(() => undefined)]);
+
+    // Both tabs were followed, but only one debugger session may remain.
+    assert.equal(transport.attachCalls.length, 2);
+    assert.equal(transport.detachCalls.length, 1, 'superseded observer must be detached');
+    const netAttached = transport.attachCalls.length - transport.detachCalls.length;
+    assert.equal(netAttached, 1, 'at most one debugger attachment may remain');
+
+    // The superseded observer (tab A) was the one detached.
+    assert.deepEqual(transport.detachCalls[0], { tabId: 1 });
+
+    // The tracked observer corresponds to the latest active tab (B).
+    assert.equal(controller.attachedTabId, 2);
+    assert.equal(controller.isRunning(), true);
+    assert.ok(controller.liveFor(2), 'live observer must be bound to the latest tab');
+    assert.equal(controller.liveFor(1), null, 'superseded tab must have no live observer');
+  });
+
+  test('following an unsupported tab detaches any current observer', async () => {
+    const { transport } = makeController();
+    const isSupported = (url: string) => !url.startsWith('chrome://');
+    const ctrl = new ActiveTabObserverController(() => transport, isSupported);
+
+    await ctrl.follow({ id: 1, url: 'https://a.example' });
+    assert.equal(ctrl.isRunning(), true);
+
+    await ctrl.follow({ id: 3, url: 'chrome://settings' });
+    assert.equal(ctrl.attachedTabId, undefined, 'unsupported tab must clear the observer');
+    assert.equal(ctrl.isRunning(), false);
+    const netAttached = transport.attachCalls.length - transport.detachCalls.length;
+    assert.equal(netAttached, 0, 'unsupported transition must detach the prior observer');
+  });
+
+  test('failed startup does not leave an untracked observer', async () => {
+    const { transport, controller } = makeController();
+    transport.failCommands.add('Network.enable');
+
+    await assert.rejects(() => controller.follow({ id: 4, url: 'https://d.example' }));
+    assert.equal(controller.attachedTabId, undefined, 'no observer may be tracked after failure');
+    assert.equal(controller.isRunning(), false);
+    const netAttached = transport.attachCalls.length - transport.detachCalls.length;
+    assert.equal(netAttached, 0, 'failed startup must detach (nothing left attached)');
+  });
+});
+
 
 describe('DEVPEEPER browser-observed console + runtime errors', () => {
   interface MockTransport extends DebuggerTransport {

@@ -44,17 +44,26 @@ export function redactUrl(input: string): RedactedUrl {
         query[name] = value;
       }
     }
+
+    const redactedHash = redactFragment(url.hash);
+    const fragmentModified = redactedHash !== url.hash;
+
     let out: string;
-    if (modified) {
-      const qs = Array.from(params.entries())
-        .map(([name, value]) => {
-          const safeValue = SENSITIVE_QUERY_PARAMS.has(name.toLowerCase())
-            ? REDACTED
-            : encodeURIComponent(value);
-          return `${encodeURIComponent(name)}=${safeValue}`;
-        })
-        .join('&');
-      out = url.origin + url.pathname + (qs ? '?' + qs : '') + url.hash;
+    if (modified || fragmentModified) {
+      if (modified) {
+        const qs = Array.from(params.entries())
+          .map(([name, value]) => {
+            const safeValue = SENSITIVE_QUERY_PARAMS.has(name.toLowerCase())
+              ? REDACTED
+              : encodeURIComponent(value);
+            return `${encodeURIComponent(name)}=${safeValue}`;
+          })
+          .join('&');
+        out = url.origin + url.pathname + (qs ? '?' + qs : '') + redactedHash;
+      } else {
+        // Only the fragment changed: keep the untouched query string.
+        out = url.origin + url.pathname + (url.search || '') + redactedHash;
+      }
     } else {
       out = input;
     }
@@ -62,6 +71,43 @@ export function redactUrl(input: string): RedactedUrl {
   } catch {
     return { url: input, query: {} };
   }
+}
+
+/**
+ * Redacts sensitive parameter-style values inside a URL fragment (hash) while
+ * leaving non-parameter anchors untouched. Uses the same sensitive-name policy
+ * as the query-string redaction. Only fragments that look like `name=value`
+ * pairs (contain `=` or `&`) are treated as parameters; a bare anchor such as
+ * `#section-name` is preserved unchanged.
+ */
+function redactFragment(hash: string): string {
+  if (!hash) return hash;
+  let body = hash.slice(1);
+  const hadQueryPrefix = body.startsWith('?');
+  if (hadQueryPrefix) body = body.slice(1);
+  if (!body) return hash;
+  if (!body.includes('=') && !body.includes('&')) return hash;
+
+  const params = new URLSearchParams(body);
+  let modified = false;
+  for (const name of params.keys()) {
+    if (SENSITIVE_QUERY_PARAMS.has(name.toLowerCase())) {
+      modified = true;
+      break;
+    }
+  }
+  if (!modified) return hash;
+
+  const rebuilt = Array.from(params.entries())
+    .map(([name, value]) => {
+      const safeValue = SENSITIVE_QUERY_PARAMS.has(name.toLowerCase())
+        ? REDACTED
+        : value;
+      return `${name}=${safeValue}`;
+    })
+    .join('&');
+
+  return '#' + (hadQueryPrefix ? '?' : '') + rebuilt;
 }
 
 export function redactUrlsInText(text: string): string {
