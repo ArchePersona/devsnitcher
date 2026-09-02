@@ -138,12 +138,19 @@ function formatRemoteObject(obj: RemoteObjectLike): string {
 }
 
 /**
- * CDP `timestamp` is fractional seconds since epoch. DEVSnitch console entries
- * store epoch milliseconds. If no timestamp is supplied, fall back to now.
+ * Normalizes a `Runtime.consoleAPICalled` timestamp into epoch milliseconds,
+ * accepting either Unix seconds or Unix milliseconds.
+ *
+ * Chromium has reported both magnitudes for this field depending on version, so
+ * the conversion is decided by magnitude rather than assumed. A threshold of
+ * 10_000_000_000 separates contemporary Unix seconds (~1.7e9) from Unix
+ * milliseconds (~1.7e12): smaller values are seconds and are scaled to
+ * milliseconds, larger values are already milliseconds and pass through
+ * unchanged. If no usable timestamp is supplied, fall back to now.
  */
 function normalizeTimestamp(timestamp: number | undefined): number {
   if (typeof timestamp === 'number' && Number.isFinite(timestamp)) {
-    return Math.round(timestamp * 1000);
+    return timestamp < 10_000_000_000 ? Math.round(timestamp * 1000) : timestamp;
   }
   return Date.now();
 }

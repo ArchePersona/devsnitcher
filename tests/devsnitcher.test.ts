@@ -1200,6 +1200,24 @@ describe('DEVPEEPER browser-observed console + runtime errors', () => {
     assert.ok(entry!.stack!.includes('app.js:10:4'));
   });
 
+  test('console timestamp normalizes seconds to ms and leaves ms unchanged', () => {
+    // Unix seconds input is scaled to milliseconds.
+    const seconds = normalizeConsoleApi({
+      type: 'log',
+      timestamp: 1_788_000_000,
+      args: [{ type: 'string', value: 'now' }],
+    });
+    assert.equal(seconds!.timestamp, 1_788_000_000_000);
+
+    // Unix milliseconds input is preserved unchanged (not scaled again).
+    const milliseconds = normalizeConsoleApi({
+      type: 'log',
+      timestamp: 1_788_000_000_000,
+      args: [{ type: 'string', value: 'now' }],
+    });
+    assert.equal(milliseconds!.timestamp, 1_788_000_000_000);
+  });
+
   test('console type mapping and unsupported types are ignored', () => {
     assert.equal(normalizeConsoleApi({ type: 'log', args: [{ type: 'string', value: 'x' }] })!.level, 'log');
     assert.equal(normalizeConsoleApi({ type: 'info', args: [{ type: 'string', value: 'x' }] })!.level, 'info');
