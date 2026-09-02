@@ -4,29 +4,29 @@ export interface ClipboardWriteInput {
 }
 
 /**
- * Reliably writes text to the ordinary system OS clipboard from the extension
- * popup document (a trusted, extension-controlled page).
+ * Writes text to the ordinary system OS clipboard from the extension popup
+ * document (a trusted, extension-controlled page), and only reports success
+ * when a trustworthy OS write has actually completed.
  *
  * Chrome/Windows are unreliable with `navigator.clipboard.writeText`: it can
  * silently resolve without placing text on the OS clipboard, or reject with
  * `NotAllowedError: Document is not focused`, because the async Clipboard API
- * requires an active, focused document. That makes it unsafe to treat a
- * resolved promise as proof the write reached the OS clipboard — the private
- * SNITCHSHOT must not be cleared on that basis alone.
+ * requires an active, focused document. A resolved promise is therefore NOT
+ * proof that the report reached the OS clipboard, and must never authorize
+ * clearing the private SNITCHSHOT.
  *
- * So this helper is layered and only reports success on a CONFIRMED OS write:
+ * Release authority:
  *
- *  1. `navigator.clipboard.write / writeText` first. If it resolves, the
- *     runtime has accepted the write — treat as success.
- *  2. Otherwise fall back to `document.execCommand('copy')` against a focused,
- *     selected offscreen textarea. Unlike the async Clipboard API, `execCommand`
- *     does not depend on the document-focus/user-activation heuristics and
- *     returns a truthful boolean. This is the same mechanism as Chrome's own
- *     offscreen-clipboard-write sample.
+ *  - The ordinary text SNITCHSHOT copy path uses `writeTextViaDomCopy`, the
+ *    deterministic `document.execCommand('copy')` path against a focused,
+ *    selected offscreen textarea. `execCommand` returns a truthful boolean, so
+ *    success is only reported when that operation returned `true`.
+ *  - The modern async Clipboard API is used only for the separate image/mixed-
+ *    content path (`imageDataUrl`), never for the ordinary text CTA.
  *
- * It never swallows an error: on total failure it throws a clear, actionable
- * message so the caller keeps the SNITCHSHOT pending, never shows a false
- * "Copied", and never sends `CLIPBOARD_RELEASED`.
+ * It never swallows an error: on failure it throws a clear, actionable message
+ * so the caller keeps the SNITCHSHOT pending, never shows a false "Copied", and
+ * never sends `CLIPBOARD_RELEASED`.
  */
 export async function writeToClipboard(input: ClipboardWriteInput): Promise<void> {
   const { text } = input;
@@ -35,26 +35,17 @@ export async function writeToClipboard(input: ClipboardWriteInput): Promise<void
     throw new Error('Clipboard copy requires report text.');
   }
 
-  // Image + text path is only available where the modern async Clipboard API
-  // exists and is focused; degrade to the text-only path otherwise.
+  // The image/mixed-content path is a separate release surface that requires
+  // the modern async Clipboard API (ClipboardItem). It is not the ordinary
+  // text SNITCHSHOT CTA and does not gate text release.
   if (input.imageDataUrl) {
-    try {
-      await writeImageAndText(input);
-      return;
-    } catch {
-      // Fall through to text-only copy below.
-    }
+    await writeImageAndText(input);
+    return;
   }
 
-  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch {
-      // Fall through to the execCommand path.
-    }
-  }
-
+  // Ordinary text release: the DOM copy path is the sole, authoritative
+  // operation. A resolved navigator.clipboard.writeText() is NOT sufficient —
+  // only a confirmed execCommand('copy') result authorizes release.
   writeTextViaDomCopy(text);
 }
 

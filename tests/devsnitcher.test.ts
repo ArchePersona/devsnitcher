@@ -1991,25 +1991,38 @@ describe('SNITCHSHOT clipboard writer', () => {
     return (window as any).__copiedTexts ?? [];
   }
 
-  test('the complete report reaches the modern clipboard API when it succeeds', async () => {
-    let written = '';
+  test('ordinary text copy ignores a resolved navigator.clipboard.writeText promise', async () => {
+    // A resolved async Clipboard API promise must NOT authorize text release.
+    let modernCalled = false;
     const restoreClipboard = installMockClipboard({
-      writeText: async (text) => {
-        written = text;
+      writeText: async () => {
+        modernCalled = true;
       },
     });
-    const restoreExec = installExecCommand(() => false);
+    const restoreExec = installExecCommand(() => true);
     try {
       await writeToClipboard({ text: '# FULL REPORT\nbody' });
-      assert.equal(written, '# FULL REPORT\nbody', 'complete report text must be written');
-      assert.equal(capturedSelections().length, 0, 'execCommand fallback must not be used');
+
+      assert.equal(
+        modernCalled,
+        false,
+        'navigator.clipboard.writeText must not be the release authority for text',
+      );
+      const captured = capturedSelections();
+      assert.equal(captured.length, 1, 'the authoritative DOM copy path must run');
+      assert.equal(captured[0].command, 'copy');
+      assert.equal(
+        captured[0].selected,
+        '# FULL REPORT\nbody',
+        'the complete report must be selected for the authoritative OS copy',
+      );
     } finally {
       restoreClipboard();
       restoreExec();
     }
   });
 
-  test('falls back to execCommand copy when the modern API is unavailable', async () => {
+  test('authoritative text copy succeeds via the DOM copy path', async () => {
     const restoreClipboard = installMockClipboard(null);
     const restoreExec = installExecCommand(() => true);
     try {
