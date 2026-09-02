@@ -178,11 +178,16 @@ document.addEventListener('DOMContentLoaded', () => {
       await writeToClipboard({ text: content.report });
 
       // Only after the clipboard write succeeds does the private buffer clear.
+      // A confirmed clear is required before reporting success; the report must
+      // not be reported as released if the buffer is still authoritative.
       const cleared = await send({
         type: 'CLIPBOARD_RELEASED',
       } satisfies SnitchMessage);
       if (cleared?.type === 'EVIDENCE_ERROR') {
         throw new Error(cleared.error);
+      }
+      if (cleared?.type !== 'CLIPBOARD_CLEARED') {
+        throw new Error('Could not confirm the SNITCHSHOT was released.');
       }
 
       stopPoll();

@@ -76,6 +76,7 @@ import {
 } from '../redaction/index';
 import { buildMarkdownReport } from '../report/markdown';
 import { buildJsonReport } from '../report/json';
+import { writeToClipboard, writeTextViaDomCopy } from '../report/clipboard';
 import {
   EvidenceCache,
   cacheRecordKey,
@@ -1939,5 +1940,127 @@ describe('SNITCHSHOT clipboard release', () => {
     assert.equal((await buffer.peek())?.report, '# KEEP ME');
     assert.equal(await buffer.isOccupied(), true);
     assert.equal(storage.store.has(SNITCHSHOT_BUFFER_KEY), true);
+  });
+});
+
+describe('SNITCHSHOT clipboard writer', () => {
+  interface ClipboardLike {
+    writeText?: (text: string) => Promise<void>;
+    write?: (items: unknown) => Promise<void>;
+  }
+
+  function installMockClipboard(clipboard: ClipboardLike | null): () => void {
+    const previous = (navigator as unknown as { clipboard?: ClipboardLike }).clipboard;
+    Object.defineProperty(navigator, 'clipboard', {
+      value: clipboard,
+      writable: true,
+      configurable: true,
+    });
+    return () => {
+      Object.defineProperty(navigator, 'clipboard', {
+        value: previous,
+        writable: true,
+        configurable: true,
+      });
+    };
+  }
+
+  function installExecCommand(impl: (command: string) => boolean): () => void {
+    const captured: Array<{ selected: string; command: string }> = [];
+    const prev = (document as any).execCommand;
+    (document as any).execCommand = (command: string) => {
+      const textarea = document.activeElement as HTMLTextAreaElement | null;
+      captured.push({
+        command,
+        selected: textarea && textarea.tagName === 'TEXTAREA' ? textarea.value : '',
+      });
+      return impl(command);
+    };
+    Object.defineProperty((window as any), '__copiedTexts', {
+      value: captured,
+      writable: true,
+      configurable: true,
+    });
+    return () => {
+      (document as any).execCommand = prev;
+      delete (window as any).__copiedTexts;
+    };
+  }
+
+  function capturedSelections(): Array<{ selected: string; command: string }> {
+    return (window as any).__copiedTexts ?? [];
+  }
+
+  test('the complete report reaches the modern clipboard API when it succeeds', async () => {
+    let written = '';
+    const restoreClipboard = installMockClipboard({
+      writeText: async (text) => {
+        written = text;
+      },
+    });
+    const restoreExec = installExecCommand(() => false);
+    try {
+      await writeToClipboard({ text: '# FULL REPORT\nbody' });
+      assert.equal(written, '# FULL REPORT\nbody', 'complete report text must be written');
+      assert.equal(capturedSelections().length, 0, 'execCommand fallback must not be used');
+    } finally {
+      restoreClipboard();
+      restoreExec();
+    }
+  });
+
+  test('falls back to execCommand copy when the modern API is unavailable', async () => {
+    const restoreClipboard = installMockClipboard(null);
+    const restoreExec = installExecCommand(() => true);
+    try {
+      await writeToClipboard({ text: '# FULL REPORT\nbody' });
+      const captured = capturedSelections();
+      assert.equal(captured.length, 1);
+      assert.equal(captured[0].command, 'copy');
+      assert.equal(
+        captured[0].selected,
+        '# FULL REPORT\nbody',
+        'the whole report must be selected for the OS copy',
+      );
+    } finally {
+      restoreClipboard();
+      restoreExec();
+    }
+  });
+
+  test('execCommand copy returning false surfaces the failure instead of a false success', async () => {
+    const restoreClipboard = installMockClipboard(null);
+    const restoreExec = installExecCommand(() => false);
+    try {
+      await assert.rejects(
+        writeToClipboard({ text: '# KEEP ME' }),
+        /clipboard rejected/i,
+        'a failed OS write must throw rather than pretend success',
+      );
+      const captured = capturedSelections();
+      assert.equal(captured.length, 1, 'it must still attempt the copy');
+      assert.equal(captured[0].selected, '# KEEP ME');
+    } finally {
+      restoreClipboard();
+      restoreExec();
+    }
+  });
+
+  test('text-only writeTextViaDomCopy reuses a focused, selectable offscreen textarea', () => {
+    const restoreExec = installExecCommand(() => true);
+    try {
+      writeTextViaDomCopy('report text');
+      const textarea = capturedSelections();
+      assert.equal(textarea.length, 1);
+      assert.equal(textarea[0].selected, 'report text');
+      // The helper must not leave the throwaway textarea in the document.
+      assert.equal(
+        Array.from(document.querySelectorAll('textarea')).length,
+        0,
+        'throwaway textarea must be removed after copy',
+      );
+    } finally {
+      restoreExec();
+    }
   });
 });
