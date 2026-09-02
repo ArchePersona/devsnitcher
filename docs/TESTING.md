@@ -106,13 +106,13 @@ Select D:\DEVSnitcher\dist
 
 ## Proof checklist
 
-Trigger the test buttons, allow the rolling cache to refresh, click **SNITCH**, then paste the clipboard output into a text file or AI chat.
+Trigger the test buttons, allow the rolling cache to refresh, click **SNITCH**, then focus an editable field and use **PASTE SNITCHSHOT** to insert the report.
 
 The report should include:
 
 | Checkpoint | Expected |
 |---|---|
-| Markdown report copied | Pass |
+| Markdown report held in private buffer | Pass |
 | URL captured | Pass |
 | Page title captured | Pass |
 | Browser captured | Pass |
@@ -224,11 +224,12 @@ must not:
 
 - trigger privileged SNITCH execution
 - trigger screenshot capture
-- change the clipboard
+- read or clear the private SNITCHSHOT buffer
+- command a PASTE SNITCHSHOT insertion
 - produce `SNITCH_RESULT`
 - expose a screenshot data URL or generated report back to the page
 
-The background service worker must also refuse `SNITCH` when the runtime sender has a tab. The normal popup button must continue to initiate `SNITCH` successfully.
+The background service worker must also refuse `SNITCH` and `PASTE_SNITCHSHOT` when the runtime sender has a tab. The normal popup buttons must continue to initiate `SNITCH` and `PASTE SNITCHSHOT` successfully.
 
 This regression proof protects the privileged-action boundary between untrusted page/tab contexts and extension behavior.
 
@@ -328,8 +329,11 @@ Checks:
 - Redaction checked
 - Encrypted rolling cache verified
 - Navigation clears/rejects stale cache
-- Clipboard output verified
-- Page-originated and tab-relayed SNITCH blocked
+- PASTE SNITCHSHOT inserts into a focused editable field
+- Second SNITCH refused while a SNITCHSHOT is pending
+- Failed paste preserves the pending SNITCHSHOT
+- Clear buffer re-enables SNITCH
+- Page-originated and tab-relayed SNITCH / PASTE_SNITCHSHOT blocked
 - Page-evidence authenticity limitation acknowledged separately
 ```
 

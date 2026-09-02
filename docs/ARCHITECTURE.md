@@ -6,7 +6,7 @@ The core path is:
 
 ```text
 DEVPEEPER (bounded probe + Chromium observer) → Content Bridge → Background → Encrypted Session Cache
-User clicks SNITCH → Popup → Background → Decrypt Cache → Redaction → Report → Clipboard
+User clicks SNITCH → Popup → Background → Decrypt Cache → Redaction → Report → Private Buffer → PASTE SNITCHSHOT
 ```
 
 The extension does not require a backend, account, dashboard, hosted service, or AI provider integration.
@@ -41,8 +41,10 @@ Everything else is secondary.
 12. Background assembles the active-tab Chromium session's browser-observed console/runtime/network evidence into the trusted evidence path, then persists the assembled evidence to the encrypted cache.
 13. Background optionally captures the user-requested screenshot.
 14. Background applies redaction and builds the report.
-15. Popup writes the report to the clipboard.
-16. User pastes the report into AI or another debugging channel.
+15. Background stores the completed report as the outstanding SNITCHSHOT in the private buffer (occupied). A second SNITCH while occupied is refused from every tab.
+16. Popup shows the occupied state; the user focuses an editable field and uses **PASTE SNITCHSHOT**.
+17. Background injects a trusted paste operation that inserts the buffered report into the focused editable target.
+18. Only after a confirmed successful insertion does background clear the private buffer, making SNITCH available again.
 
 ---
 
@@ -94,7 +96,7 @@ Responsibilities:
 - Accept optional user notes
 - Toggle optional screenshot capture
 - Display success or error state
-- Write final output to clipboard when appropriate
+- Offer **SNITCH** when empty and **PASTE SNITCHSHOT** when a report is pending
 
 The popup should stay simple.
 
@@ -192,6 +194,29 @@ The cache is not an evidence-provenance system. It protects evidence after accep
 
 ---
 
+### SNITCHSHOT private buffer and owned paste
+
+There is exactly one outstanding SNITCHSHOT globally across DEVSnitcher.
+
+The completed, redacted Markdown report is stored in a DEVSnitcher-owned private buffer in trusted, session-scoped extension storage (`chrome.storage.session`, restricted to `TRUSTED_CONTEXTS`). The buffer holds the report plus minimal lifecycle metadata (`sourceTabId`, `createdAt`). It is the authoritative store for the paste lifecycle — the system clipboard is not a state store and does not gate SNITCH.
+
+```text
+EMPTY
+  │  SNITCH succeeds
+  ▼
+OCCUPIED
+  │  PASTE SNITCHSHOT succeeds
+  ▼
+EMPTY
+```
+
+- **SNITCH gate.** Before creating a SNITCHSHOT, background checks the buffer. If occupied, SNITCH is refused from every tab with a clear message; the existing report is neither overwritten nor discarded. The buffer is global, not per-tab: another tab's SNITCH is blocked until the pending SNITCHSHOT is consumed.
+- **Owned paste.** The popup's primary action becomes **PASTE SNITCHSHOT**. Background reads the buffer and injects a trusted, extension-initiated paste via `chrome.scripting.executeScript` into the currently active supported tab's focused editable target (text inputs/textareas and content-editable surfaces). It inserts at the caret and replaces a selection; it does not replace the whole field. The page never messages the extension to trigger paste.
+- **Consumption boundary.** The buffer is cleared only after the paste reports a confirmed successful insertion. A failed or hostile insertion retains the buffer so the user can retry.
+- **Cross-tab isolation of concern.** Other tabs continue normal DEVPEEPER observation while the buffer is occupied. Tab switching never clears or replaces the outstanding SNITCHSHOT; observation and SNITCHSHOT consumption are separate concerns.
+
+---
+
 ### DEVPEEPER evidence acquisition
 
 DEVPEEPER acquires evidence through two browser-mediated mechanisms (see the page-evidence authenticity section above). The legacy page-context collector modules no longer exist.
@@ -235,9 +260,8 @@ Current output targets:
 
 - Markdown
 - JSON
-- Clipboard
 
-Markdown is the primary product format because it can be pasted directly into AI chats and issue trackers.
+Markdown is the primary product format because it can be pasted directly into AI chats and issue trackers. The 2.0 report lifecycle produces the Markdown report and holds it in the private SNITCHSHOT buffer; it is delivered through the extension-owned **PASTE SNITCHSHOT** action, not the system clipboard.
 
 ---
 
@@ -256,9 +280,15 @@ CACHE_EVIDENCE
 CACHE_STORED
 REFRESH_CACHE
 CACHE_REFRESHED
+GET_BOUNDED_OBSERVATION
+BOUNDED_OBSERVATION
+SNITCHSHOT_STATUS
+SNITCHSHOT_STATUS_RESULT
+PASTE_SNITCHSHOT
+PASTE_SNITCHSHOT_RESULT
 ```
 
-`SNITCH` belongs only to the extension message path initiated by the popup and is rejected when relayed from a tab. Cache messages belong to the extension runtime path. `GET_TAB_ID`/`TAB_ID` are extension-internal orchestration between the content bridge and background. The legacy `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` page-evidence protocol has been removed.
+`SNITCH` belongs only to the extension message path initiated by the popup and is rejected when relayed from a tab. Cache messages belong to the extension runtime path. `GET_TAB_ID`/`TAB_ID` and `GET_BOUNDED_OBSERVATION`/`BOUNDED_OBSERVATION` are extension-internal orchestration between the content bridge and background. `SNITCHSHOT_STATUS`/`PASTE_SNITCHSHOT` are popup-initiated and are refused when relayed from a tab. The legacy `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` page-evidence protocol has been removed.
 
 ---
 

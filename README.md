@@ -22,7 +22,9 @@ DEVSnitcher does it for you.
 
 Click **SNITCH**.
 
-DEVSnitcher builds a clean Markdown report from the browser evidence around the problem and puts it on your clipboard.
+DEVSnitcher builds a clean Markdown report from the browser evidence around the problem and holds it in a private DEVSnitcher buffer.
+
+Then focus an editable field (a chat input, issue comment, or text box), and use the popup's **PASTE SNITCHSHOT** to insert the report — exactly where your cursor is.
 
 Then paste it wherever you debug:
 
@@ -77,7 +79,7 @@ It does not upload your data to a backend.
 
 It does not monitor you in the background.
 
-It captures evidence locally, removes obvious secrets where it can, builds the report, and hands it back to you.
+It captures browser evidence locally, removes obvious secrets where it can, builds the report, and hands it back to you.
 
 You decide where it goes next.
 
@@ -132,7 +134,7 @@ npm run dev
 
 DEVSnitcher is intentionally small and standalone.
 
-It captures browser-side evidence, redacts obvious secrets, turns the result into Markdown, and copies it to the clipboard.
+It captures browser-side evidence, redacts obvious secrets, turns the result into Markdown, and holds it in a private DEVSnitcher buffer until you paste it into an editable field with **PASTE SNITCHSHOT**.
 
 There is no backend, no telemetry service, no AI call, and no required account.
 

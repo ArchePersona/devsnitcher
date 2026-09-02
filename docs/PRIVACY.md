@@ -2,7 +2,7 @@
 
 DEVSnitcher is local-first.
 
-The extension captures browser evidence, maintains an encrypted browser-session cache, formats user-requested evidence into a report, and gives that report to the user through the clipboard.
+The extension captures browser evidence, maintains an encrypted browser-session cache, formats user-requested evidence into a report, holds it in a private DEVSnitcher buffer, and inserts it into an editable field when the user chooses **PASTE SNITCHSHOT**.
 
 There is no DEVSnitcher cloud service in the 2.x extension.
 
@@ -28,7 +28,7 @@ Nothing leaves the browser automatically.
 
 DEVSnitcher does not upload captured evidence to a DEVSnitcher backend.
 
-The user controls the next external step by pasting the report into an AI chat, issue tracker, support thread, text file, or other destination.
+The user controls the next external step by using **PASTE SNITCHSHOT** to insert the report into an AI chat, issue tracker, support thread, text file, or other destination.
 
 ---
 
@@ -182,10 +182,10 @@ The extension may locally observe, validate, and encrypt debugging evidence befo
 The intended flow is:
 
 ```text
-Observe locally → Validate → Encrypt session cache → User clicks SNITCH → Decrypt locally → Redact → Report → Paste where chosen
+Observe locally → Validate → Encrypt session cache → User clicks SNITCH → Decrypt locally → Redact → Report → Private DEVSnitcher buffer → User focuses an editable field → PASTE SNITCHSHOT
 ```
 
-Nothing is automatically uploaded by DEVSnitcher.
+The report is held in a private DEVSnitcher session buffer and cleared only after a successful paste. Nothing is automatically uploaded by DEVSnitcher.
 
 ---
 

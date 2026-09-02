@@ -9,7 +9,15 @@ import {
   makeBoundedObservation,
   type InjectionResultLike,
 } from '../../devpeeper/observation';
-import type { ConsoleEntry, Evidence, JsErrorEntry, NetworkEntry, SnitchMessage } from '../../shared/types';
+import { pasteReport } from './snitchshot-paste';
+import { SnitchshotBuffer } from './snitchshot-buffer';
+import type {
+  ConsoleEntry,
+  Evidence,
+  JsErrorEntry,
+  NetworkEntry,
+  SnitchMessage,
+} from '../../shared/types';
 
 const CACHE_KEY_STORAGE = 'devsnitcher:evidence-cache-key:v1';
 
@@ -46,6 +54,19 @@ const cache = new EvidenceCache(
   },
   getOrCreateCacheKey,
 );
+
+// Private DEVSnitcher-owned SNITCHSHOT buffer. Global, session-scoped, restricted
+// to trusted contexts, and authoritative over the owned paste lifecycle. It is
+// cleared only by a successful PASTE SNITCHSHOT, never by tab switching.
+const snitchshot = new SnitchshotBuffer({
+  get: async (key) => chrome.storage.session.get(key),
+  set: async (items) => {
+    await chrome.storage.session.set(items);
+  },
+  remove: async (key) => {
+    await chrome.storage.session.remove(key);
+  },
+});
 
 chrome.tabs.onActivated.addListener((activeInfo) => {
   // Follow the active tab while the extension operates so browser-observed
@@ -157,6 +178,93 @@ chrome.runtime.onMessage.addListener(
       return true;
     }
 
+    if (msg?.type === 'SNITCHSHOT_STATUS') {
+      // Popup reads the buffer occupancy so it can present SNITCH or PASTE.
+      // Refuse tab-relayed senders so page/content scripts cannot probe the
+      // private buffer state.
+      if (sender.tab) {
+        sendResponse({
+          type: 'SNITCH_ERROR',
+          error: 'Refused from a tab context.',
+        } satisfies SnitchMessage);
+        return false;
+      }
+      snitchshot
+        .isOccupied()
+        .then((occupied) =>
+          sendResponse({ type: 'SNITCHSHOT_STATUS_RESULT', occupied } satisfies SnitchMessage),
+        )
+        .catch(() =>
+          sendResponse({ type: 'SNITCHSHOT_STATUS_RESULT', occupied: false } satisfies SnitchMessage),
+        );
+      return true;
+    }
+
+    if (msg?.type === 'PASTE_SNITCHSHOT') {
+      // DEVSnitcher-owned paste: only the extension popup may invoke it. The
+      // buffer is read, the report is inserted into the active supported tab's
+      // focused editable target, and the buffer is cleared only on a confirmed
+      // successful insertion. A failed/hostile insertion cannot consume it.
+      if (sender.tab) {
+        sendResponse({
+          type: 'PASTE_SNITCHSHOT_RESULT',
+          pasted: false,
+          error: 'Refused from a tab context.',
+        } satisfies SnitchMessage);
+        return false;
+      }
+
+      (async () => {
+        try {
+          const record = await snitchshot.peek();
+          if (!record) {
+            sendResponse({
+              type: 'PASTE_SNITCHSHOT_RESULT',
+              pasted: false,
+              error: 'No SNITCHSHOT is pending.',
+            } satisfies SnitchMessage);
+            return;
+          }
+
+          const tab = await getActiveTab();
+          const results = await chrome.scripting.executeScript({
+            target: { tabId: tab.id! },
+            world: 'MAIN',
+            func: pasteReport,
+            args: [record.report],
+          });
+          const outcome = results[0]?.result as
+            | { ok: boolean; reason?: string }
+            | undefined;
+
+          if (!outcome?.ok) {
+            // Retain the buffer so the user can retry.
+            sendResponse({
+              type: 'PASTE_SNITCHSHOT_RESULT',
+              pasted: false,
+              error: outcome?.reason ?? 'DEVSnitcher could not insert the report.',
+            } satisfies SnitchMessage);
+            return;
+          }
+
+          // Only a confirmed insertion consumes the SNITCHSHOT.
+          await snitchshot.clear();
+          sendResponse({
+            type: 'PASTE_SNITCHSHOT_RESULT',
+            pasted: true,
+          } satisfies SnitchMessage);
+        } catch (err) {
+          // Retain the buffer on any failure so it is never lost.
+          sendResponse({
+            type: 'PASTE_SNITCHSHOT_RESULT',
+            pasted: false,
+            error: String(err),
+          } satisfies SnitchMessage);
+        }
+      })();
+      return true;
+    }
+
     if (msg?.type !== 'SNITCH') return false;
 
     // Privileged action: only the extension popup may trigger SNITCH.
@@ -171,6 +279,16 @@ chrome.runtime.onMessage.addListener(
 
     (async () => {
       try {
+        // SNITCH gate: exactly one outstanding SNITCHSHOT is allowed globally.
+        // If already OCCUPIED, refuse without overwriting or discarding it.
+        if (await snitchshot.isOccupied()) {
+          sendResponse({
+            type: 'SNITCH_ERROR',
+            error: 'SNITCHSHOT pending — paste it before taking another.',
+          } satisfies SnitchMessage);
+          return;
+        }
+
         const tab = await getActiveTab();
 
         // Establish the DEVPEEPER active-tab Chromium observation lifecycle.
@@ -209,6 +327,10 @@ chrome.runtime.onMessage.addListener(
           evidence: redacted,
           userNotes: msg.userNotes ?? '',
         });
+
+        // The completed, redacted report becomes the outstanding SNITCHSHOT.
+        // Only after this succeeds does the buffer move EMPTY → OCCUPIED.
+        await snitchshot.fill(report, tab.id!);
 
         sendResponse({
           type: 'SNITCH_RESULT',

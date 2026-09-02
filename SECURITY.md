@@ -25,11 +25,13 @@ DEVSnitcher is designed around these constraints:
 - No DEVSnitcher backend
 - No cloud upload
 - No telemetry by default
-- Clipboard-based output
+- DEVSnitcher-owned SNITCHSHOT paste into an editable field, initiated from the popup
 - Best-effort redaction before report generation
 - User decides where the report is pasted
 - Only the extension popup may initiate the privileged `SNITCH` action
 - Background explicitly refuses `SNITCH` messages that arrive with a tab sender
+- The private SNITCHSHOT buffer is stored in trusted, session-scoped extension storage; page JavaScript and content scripts cannot read or clear it
+- `PASTE SNITCHSHOT` is popup-initiated, refused when relayed from a tab, and the buffer is cleared only after a confirmed successful insertion
 - Page JavaScript must not be able to invoke privileged extension actions through the content bridge
 - Cache-write evidence is shape-validated before encryption
 - Accepted rolling evidence is encrypted before it is written to extension session storage
@@ -61,7 +63,7 @@ DEVSnitcher therefore treats page-controlled messages as untrusted input. Page J
 The intended privileged path begins with an explicit user action in the extension popup.
 
 ```text
-User clicks SNITCH → Popup → Background → Decrypt cache → Redact → Report → Popup → Clipboard
+User clicks SNITCH → Popup → Background → Decrypt cache → Redact → Report → Private buffer → PASTE SNITCHSHOT → Focused field
 ```
 
 The background service worker enforces the popup-only boundary directly. A `SNITCH` message carrying a `sender.tab` is refused rather than resolved as an authorized source tab.
@@ -168,7 +170,7 @@ Please report issues such as:
 - A secret not being redacted when it clearly should be
 - Evidence being sent over the network unexpectedly
 - Extension access on browser-internal pages
-- Clipboard output containing hidden or unintended data
+- A SNITCHSHOT inserted into the wrong tab or a non-editable target treating a failed paste as success
 - A permission that is broader than needed
 - A content-script injection bug
 - A cross-origin evidence leak

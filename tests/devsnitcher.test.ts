@@ -35,6 +35,9 @@ setGlobal('Request', ReqCtor);
 setGlobal('Headers', (window as any).Headers || globalThis.Headers);
 setGlobal('Response', RespCtor);
 setGlobal('Element', window.Element);
+setGlobal('HTMLInputElement', window.HTMLInputElement);
+setGlobal('HTMLTextAreaElement', window.HTMLTextAreaElement);
+setGlobal('InputEvent', (window as any).InputEvent || window.Event);
 setGlobal('location', window.location);
 setGlobal('ErrorEvent', window.ErrorEvent);
 setGlobal('PromiseRejectionEvent', window.PromiseRejectionEvent);
@@ -79,6 +82,9 @@ import {
   isEvidenceShape,
   type SessionStorageLike,
 } from '../extension/background/cache';
+import { SnitchshotBuffer, SNITCHSHOT_BUFFER_KEY } from '../extension/background/snitchshot-buffer';
+import type { SnitchshotStorageLike } from '../extension/background/snitchshot-buffer';
+import { pasteReport } from '../extension/background/snitchshot-paste';
 import { snapshotProbe, type BoundedSnapshot } from '../devpeeper/snapshot-probe';
 import {
   makeBoundedObservation,
@@ -1716,5 +1722,130 @@ describe('DEVPEEPER browser-observed network (DEVPEEPER-004)', () => {
 
     transport.emitDetach({ tabId: 3 }, 'target_closed');
     assert.equal((await observer.getNetworkEntries()).length, 0);
+  });
+});
+
+describe('SNITCHSHOT private buffer lifecycle', () => {
+  function makeMemoryStorage(): SnitchshotStorageLike & { store: Map<string, unknown> } {
+    const store = new Map<string, unknown>();
+    return {
+      store,
+      get: async (key) => ({ [key]: store.get(key) }),
+      set: async (items) => {
+        for (const [k, v] of Object.entries(items)) store.set(k, v);
+      },
+      remove: async (key) => {
+        store.delete(key);
+      },
+    };
+  }
+
+  function makeBuffer(storage: SnitchshotStorageLike & { store: Map<string, unknown> }) {
+    return new SnitchshotBuffer(storage);
+  }
+
+  test('successful SNITCH fills an empty private buffer (EMPTY → OCCUPIED)', async () => {
+    const storage = makeMemoryStorage();
+    const buffer = makeBuffer(storage);
+    assert.equal(await buffer.isOccupied(), false);
+
+    await buffer.fill('# DEVSNITCHER REPORT', 1);
+
+    assert.equal(await buffer.isOccupied(), true);
+    const record = await buffer.peek();
+    assert.equal(record?.sourceTabId, 1);
+    assert.ok(record?.report.startsWith('# DEVSNITCHER REPORT'));
+    assert.ok(storage.store.has(SNITCHSHOT_BUFFER_KEY));
+  });
+
+  test('second SNITCH while occupied is refused without replacing the first', async () => {
+    const storage = makeMemoryStorage();
+    const buffer = makeBuffer(storage);
+    await buffer.fill('# FIRST REPORT', 1);
+
+    await assert.rejects(
+      buffer.fill('# SECOND REPORT', 2),
+      /SNITCHSHOT pending/,
+    );
+
+    const record = await buffer.peek();
+    assert.equal(record?.sourceTabId, 1);
+    assert.equal(record?.report, '# FIRST REPORT');
+  });
+
+  test('successful owned paste clears the buffer (OCCUPIED → EMPTY)', async () => {
+    const storage = makeMemoryStorage();
+    const buffer = makeBuffer(storage);
+    await buffer.fill('# PASTE ME', 1);
+
+    await buffer.clear();
+
+    assert.equal(await buffer.isOccupied(), false);
+    assert.equal(await buffer.peek(), null);
+  });
+
+  test('failed paste preserves the buffer; unsupported target is not consumed', async () => {
+    const storage = makeMemoryStorage();
+    const buffer = makeBuffer(storage);
+    await buffer.fill('# KEEP ME', 1);
+
+    // Simulate a failed paste (no clear called), then a retry still works and
+    // the buffer still holds the original report.
+    const record = await buffer.peek();
+    assert.equal(record?.report, '# KEEP ME');
+    assert.ok(record, 'buffer must remain intact after a failed paste');
+  });
+
+  test('tab switching does not clear the outstanding SNITCHSHOT', async () => {
+    const storage = makeMemoryStorage();
+    const buffer = makeBuffer(storage);
+    await buffer.fill('# PERSIST', 1);
+
+    // The buffer is global (single key), not scoped to a tab id. Confirm that
+    // nothing tied to a per-tab key can just disappear on a tab change, and that
+    // an unrelated storage mutation leaves it intact.
+    storage.store.set('devsnitcher:evidence-cache:v1:2', { version: 1 });
+
+    assert.equal(storage.store.has(SNITCHSHOT_BUFFER_KEY), true);
+    assert.equal(await buffer.isOccupied(), true);
+    assert.equal((await buffer.peek())?.report, '# PERSIST');
+  });
+});
+
+describe('SNITCHSHOT owned paste', () => {
+  test('returns not-ok with a reason when no editable target is focused', () => {
+    // jsdom's document.body is not content-editable and not an input/textarea.
+    document.body.innerHTML = '';
+    const result = pasteReport('report text');
+    assert.equal(result.ok, false);
+    assert.ok(result.reason);
+  });
+
+  test('inserts into a focused textarea at the caret and replaces selection', () => {
+    const textarea = document.createElement('textarea');
+    (textarea as HTMLTextAreaElement).value = 'prefix|suffix';
+    const start = 'prefix'.length;
+    const end = 'prefix'.length;
+    (textarea as HTMLTextAreaElement).selectionStart = start;
+    (textarea as HTMLTextAreaElement).selectionEnd = end;
+    document.body.innerHTML = '';
+    document.body.appendChild(textarea);
+    textarea.focus();
+
+    const result = pasteReport('MID');
+
+    assert.equal(result.ok, true);
+    assert.equal((textarea as HTMLTextAreaElement).value, 'prefixMID|suffix');
+  });
+
+  test('reports not-ok when the focused element is not editable', () => {
+    const div = document.createElement('div');
+    document.body.innerHTML = '';
+    document.body.appendChild(div);
+    div.setAttribute('tabindex', '0');
+    div.focus();
+
+    const result = pasteReport('report text');
+    assert.equal(result.ok, false);
   });
 });

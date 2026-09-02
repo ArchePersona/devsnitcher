@@ -84,4 +84,8 @@ export type SnitchMessage =
   | { type: 'PONG' }
   | { type: 'SNITCH'; userNotes: string; screenshot: boolean }
   | { type: 'SNITCH_RESULT'; report: string; screenshotDataUrl?: string }
-  | { type: 'SNITCH_ERROR'; error: string };
+  | { type: 'SNITCH_ERROR'; error: string }
+  | { type: 'SNITCHSHOT_STATUS' }
+  | { type: 'SNITCHSHOT_STATUS_RESULT'; occupied: boolean }
+  | { type: 'PASTE_SNITCHSHOT' }
+  | { type: 'PASTE_SNITCHSHOT_RESULT'; pasted: boolean; error?: string };

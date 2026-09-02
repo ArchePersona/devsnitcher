@@ -66,7 +66,7 @@ It does not call an AI.
 
 It does not guess.
 
-It captures browser evidence, redacts obvious secrets, formats the result, and copies it to the clipboard.
+It captures browser evidence, redacts obvious secrets, formats the result into a Markdown report, and holds it in a private DEVSnitcher buffer until the user pastes it into an editable field.
 
 The user decides where the report goes.
 
@@ -188,7 +188,7 @@ DEVSnitcher is local-first.
 
 The extension does not create an account, call a DEVSnitcher server, or send captured evidence to a backend.
 
-The output path is the clipboard.
+The output path is DEVSnitcher's own **PASTE SNITCHSHOT** action into an editable field.
 
 The user controls where the report goes.
 
@@ -239,9 +239,9 @@ Redaction
   └─ URLs
 
 Report
-  └─ Markdown
-  └─ JSON
-  └─ Clipboard
+  └─ Markdown report (primary product format)
+  └─ JSON report
+  └─ Held in a private DEVSnitcher buffer and inserted via PASTE SNITCHSHOT
 ```
 
 ## Project Layout
@@ -249,7 +249,7 @@ Report
 ```text
 devpeeper/         Evidence acquisition (bounded probe, Chromium observer, screenshots)
 redaction/         Pure redaction helpers
-report/            Markdown, JSON, and clipboard output
+report/            Markdown and JSON report builders
 shared/            Shared TypeScript types
 extension/         Browser extension source
   background/      Service worker and evidence coordinator
