@@ -27,20 +27,21 @@ Everything else is secondary.
 
 ## Runtime flow
 
-1. The page script observes browser evidence in page context.
-2. The isolated content bridge periodically requests the current evidence snapshot.
-3. The content bridge sends accepted evidence to the background service worker through the extension runtime.
-4. Background validates the evidence payload, encrypts valid evidence with AES-256-GCM, and writes only ciphertext plus required metadata to `chrome.storage.session`.
-5. User opens the popup, optionally enters a short description, and clicks **SNITCH**.
-6. Popup sends `SNITCH` to the background service worker.
-7. Background refuses tab-relayed `SNITCH` messages and resolves the active tab only for the popup-originated action.
-8. Background ensures the content script is present.
-9. Background prefers the existing encrypted cache; if no usable cache exists, it may request one immediate refresh.
-10. Background decrypts the cache inside trusted extension context and validates the decrypted evidence shape.
-11. Background optionally captures the user-requested screenshot.
-12. Background applies redaction and builds the report.
-13. Popup writes the report to the clipboard.
-14. User pastes the report into AI or another debugging channel.
+1. DEVPEEPER's bounded probe observes environment, focused DOM and current selection through `chrome.scripting.executeScript` from extension-controlled code; Chrome returns the result inside its `InjectionResult`, not via a page-authored message.
+2. The page script still collects console, network and JavaScript errors in page context through the narrow legacy bridge. This console/network/error ingress is legacy and remains unresolved pending later DEVPEEPER milestones.
+3. DEVPEEPER normalizes the Chrome-mediated bounded observation and the content bridge assembles the evidence snapshot.
+4. The content bridge sends accepted evidence to the background service worker through the extension runtime.
+5. Background validates the evidence payload, encrypts valid evidence with AES-256-GCM, and writes only ciphertext plus required metadata to `chrome.storage.session`.
+6. User opens the popup, optionally enters a short description, and clicks **SNITCH**.
+7. Popup sends `SNITCH` to the background service worker.
+8. Background refuses tab-relayed `SNITCH` messages and resolves the active tab only for the popup-originated action.
+9. Background ensures the content script is present.
+10. Background prefers the existing encrypted cache; if no usable cache exists, it may request one immediate refresh.
+11. Background decrypts the cache inside trusted extension context and validates the decrypted evidence shape.
+12. Background optionally captures the user-requested screenshot.
+13. Background applies redaction and builds the report.
+14. Popup writes the report to the clipboard.
+15. User pastes the report into AI or another debugging channel.
 
 ---
 
@@ -66,11 +67,15 @@ The page does not receive the cache key or decrypted cache contents. Malformed c
 
 ### Page-evidence authenticity
 
-The page script and ordinary page JavaScript share the page execution environment. The current page-facing evidence transport uses `window.postMessage` for `COLLECT_EVIDENCE` / `EVIDENCE_RESULT`.
+DEVPEEPER has two distinct evidence-producing paths, with different authenticity properties.
 
-Encryption begins only after the extension accepts that evidence. Therefore the encrypted cache protects accepted evidence at rest; it does **not** cryptographically prove that the original page-context evidence producer was genuine.
+**Browser-mediated bounded observations.** Environment, focused DOM and current selection are acquired through `chrome.scripting.executeScript` from extension-controlled code. Chrome returns the result directly to the extension in an `InjectionResult`; the page does not send these values over `window.postMessage`. A hostile page calling `window.postMessage` cannot substitute these bounded observations.
 
-Forged page evidence before cache ingestion remains a separate evidence-integrity concern.
+Chrome authenticates this execution/return transport path to the extension. It does **not** make the observed page state semantically truthful — the webpage can still influence the DOM, focus and selection it exposes to the probe. This is a transport-path authenticity property, not a claim that MAIN-world data is inherently trustworthy.
+
+**Legacy page-evidence ingress.** Console, network and JavaScript-error collection still uses the page-context `window.postMessage` `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` bridge. Encryption begins only after the extension accepts that evidence, so the encrypted cache protects accepted evidence at rest; it does **not** cryptographically prove the original page-context console/network/error producer was genuine.
+
+The greenfield console/network/error migration is not yet complete: that ingress remains unresolved and is handled in later DEVPEEPER milestones.
 
 ---
 
@@ -118,6 +123,20 @@ The background worker should not become a dashboard, analytics layer, or hosted 
 
 ---
 
+### DEVPEEPER
+
+DEVPEEPER is DEVSnitcher's browser sensing layer.
+
+It runs extension-controlled code that observes the browser and page through browser-mediated mechanisms. It does not run the PEEP runtime, generic execution host, PowerShell support, or build/cloud adapters.
+
+Current DEVPEEPER paths:
+
+- **Chrome-mediated bounded probe** — executes a small self-contained probe in the tab's isolated world through `chrome.scripting.executeScript`. Chrome returns the result in an `InjectionResult` carrying browser-issued provenance (`tabId`, `frameId`, `documentId`). The probe reads environment, focused DOM context and current selection, starts no listeners, and never uses `window.postMessage`.
+
+Future DEVPEEPER milestones will migrate console, runtime errors and network observation to Chromium-issued events. Those migrations are not present in this milestone.
+
+---
+
 ### Content bridge
 
 The content bridge runs in the isolated extension world.
@@ -125,7 +144,10 @@ The content bridge runs in the isolated extension world.
 Responsibilities:
 
 - Respond to PING/PONG checks
-- Periodically request evidence from the page script
+- Resolve its host tab id through the background
+- Execute the DEVPEEPER bounded probe through `chrome.scripting.executeScript` and normalize its result into the evidence snapshot
+- Periodically request console/network/error evidence from the page script over the legacy page-evidence bridge
+- Assemble environment/DOM from the Chrome-mediated probe and console/network/errors from the legacy path
 - Prevent overlapping rolling-cache refreshes
 - Send accepted evidence to background with `CACHE_EVIDENCE`
 - Receive explicit `REFRESH_CACHE` fallback requests from background
@@ -136,18 +158,17 @@ The content bridge does not hold the encryption/decryption key and must not acce
 
 ### Page script
 
-The page script runs in the page context.
+The page script runs in the page context and currently supplies only the legacy console/network/error evidence path.
 
-Responsibilities:
+Responsibilities (legacy, pending later DEVPEEPER migration):
 
 - Patch safe browser APIs needed for evidence capture
 - Observe console calls
 - Observe failed network requests
 - Observe JavaScript errors and promise rejections
-- Capture DOM context
-- Return evidence when asked
+- Return console/network/error evidence when the content bridge asks
 
-The page script should collect evidence only. It should not diagnose, access the encrypted cache, hold its key, or initiate privileged extension actions.
+The page script does not author the environment/DOM observations — those come from the Chrome-mediated DEVPEEPER probe. The page script should collect evidence only. It should not diagnose, access the encrypted cache, hold its key, or initiate privileged extension actions.
 
 ---
 
@@ -237,6 +258,8 @@ Typical extension and page-evidence messages include:
 SNITCH
 PING
 PONG
+GET_TAB_ID
+TAB_ID
 COLLECT_EVIDENCE
 EVIDENCE_RESULT
 EVIDENCE_ERROR
@@ -246,7 +269,7 @@ REFRESH_CACHE
 CACHE_REFRESHED
 ```
 
-`SNITCH` belongs only to the extension message path initiated by the popup and is rejected when relayed from a tab. Cache messages belong to the extension runtime path. `COLLECT_EVIDENCE` and `EVIDENCE_RESULT` belong to the narrow page-evidence bridge.
+`SNITCH` belongs only to the extension message path initiated by the popup and is rejected when relayed from a tab. Cache messages belong to the extension runtime path. `GET_TAB_ID`/`TAB_ID` are extension-internal orchestration between the content bridge and background. `COLLECT_EVIDENCE` and `EVIDENCE_RESULT` belong to the narrow, legacy page-evidence bridge that currently carries only console/network/error evidence.
 
 ---
 

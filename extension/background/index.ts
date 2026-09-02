@@ -67,6 +67,20 @@ chrome.runtime.onMessage.addListener(
       return true;
     }
 
+    if (msg?.type === 'GET_TAB_ID') {
+      // Content scripts resolve their host tab id through the background, which
+      // sees the sender's tab context. Used to target the DEVPEEPER bounded probe.
+      if (sender.tab?.id != null) {
+        sendResponse({ type: 'TAB_ID', tabId: sender.tab.id } satisfies SnitchMessage);
+      } else {
+        sendResponse({
+          type: 'EVIDENCE_ERROR',
+          error: 'Rejected: no tab context for tab id resolution.',
+        } satisfies SnitchMessage);
+      }
+      return false;
+    }
+
     if (msg?.type !== 'SNITCH') return false;
 
     // Privileged action: only the extension popup may trigger SNITCH.

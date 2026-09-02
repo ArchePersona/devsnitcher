@@ -35,8 +35,9 @@ DEVSnitcher is designed around these constraints:
 - Accepted rolling evidence is encrypted before it is written to extension session storage
 - The cache encryption key remains in trusted extension context
 - Per-tab cache records are cleared on tab close and navigation/load
+- Environment/DOM observations are acquired through `chrome.scripting.executeScript` and carried back in Chrome's `InjectionResult`, not through a page-authored message
 
-The page-facing message bridge is limited to evidence collection. It is not a general command channel into the extension service worker.
+The page-facing message bridge is limited to legacy console/network/error evidence collection. It is not a general command channel into the extension service worker.
 
 ---
 
@@ -95,18 +96,23 @@ Modification of authenticated ciphertext or IV should cause decryption failure r
 
 The encrypted cache protects evidence **after DEVSnitcher accepts it for caching**.
 
-It does not authenticate the original producer of evidence inside page context.
+It does not authenticate the original producer of all evidence inside page context.
 
-The current page-facing `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` transport uses `window.postMessage`. Ordinary page JavaScript shares that environment with the injected page script and may attempt to forge evidence before the content bridge passes it into the trusted extension runtime.
+DEVSnitcher has two evidence paths with different authenticity properties:
 
-Therefore DEVSnitcher must not claim that the encrypted cache provides end-to-end evidence provenance.
+**Chrome-mediated bounded observations.** Environment, focused DOM and current selection are acquired through `chrome.scripting.executeScript` from extension-controlled code. Chrome returns the result to the extension inside an `InjectionResult`, so a hostile page calling `window.postMessage` cannot forge or substitute these bounded observations. Chrome authenticates the execution/return transport path to the extension. It does **not** make the observed page state semantically truthful: the webpage can still influence the DOM, focus and selection exposed to the probe.
+
+**Legacy page-evidence ingress.** Console, network and JavaScript-error collection still uses the page-context `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` `window.postMessage` bridge. Ordinary page JavaScript shares that environment with the injected page script and may attempt to forge console/network/error evidence before the content bridge passes it into the trusted extension runtime. This ingress is legacy and remains unresolved pending later DEVPEEPER milestones.
+
+Therefore DEVSnitcher must not claim that the encrypted cache provides end-to-end evidence provenance for the legacy console/network/error path, nor that Chrome-mediated execution makes page-controlled state truthful.
 
 This distinction matters:
 
 ```text
 Privileged-action authorization: protected by popup-only background enforcement.
 Stored-cache confidentiality/integrity: protected by extension-owned AES-GCM encryption and validation.
-Original page-evidence authenticity: separate unresolved trust-boundary concern.
+Browser-mediated transport authenticity: environment/DOM return path authenticated by Chrome's InjectionResult.
+Original page-evidence ingress authenticity: console/network/error remain a separate unresolved trust-boundary concern, pending later DEVPEEPER milestones.
 ```
 
 ---

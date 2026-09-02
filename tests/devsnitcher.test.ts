@@ -75,6 +75,12 @@ import {
   isEvidenceShape,
   type SessionStorageLike,
 } from '../extension/background/cache';
+import { snapshotProbe, type BoundedSnapshot } from '../devpeeper/snapshot-probe';
+import {
+  makeBoundedObservation,
+  normalizeBoundedSnapshot,
+  type InjectionResultLike,
+} from '../devpeeper/observation';
 import type { Evidence, NetworkEntry } from '../shared/types';
 
 describe('DEVSnitcher collectors', () => {
@@ -678,5 +684,76 @@ describe('encrypted evidence cache', () => {
     const { cache } = await makeCache();
 
     await assert.rejects(() => cache.load(42, PAGE_URL));
+  });
+});
+
+describe('DEVPEEPER Chrome-mediated bounded observation', () => {
+  test('bounded probe returns plain serializable data without a postMessage transport', () => {
+    const source = snapshotProbe.toString();
+    assert.ok(!source.includes('postMessage'), 'probe must not use window.postMessage');
+
+    const snapshot = snapshotProbe();
+    assert.ok(snapshot.environment);
+    assert.equal(typeof snapshot.environment.url, 'string');
+    assert.equal(typeof snapshot.environment.title, 'string');
+    assert.equal(typeof snapshot.environment.browser, 'string');
+    assert.equal(typeof snapshot.environment.platform, 'string');
+    assert.equal(typeof snapshot.environment.viewport.width, 'number');
+    assert.equal(typeof snapshot.environment.viewport.height, 'number');
+
+    // Round-trips through JSON, so Chrome can serialize it back to the extension.
+    const serialized = JSON.parse(JSON.stringify(snapshot)) as BoundedSnapshot;
+    assert.deepEqual(serialized, snapshot);
+  });
+
+  test('Chrome-mediated snapshot normalizes into EnvironmentInfo and DomContext', () => {
+    const snapshot: BoundedSnapshot = {
+      environment: {
+        url: 'https://example.com/page',
+        title: 'Page',
+        browser: 'Chrome',
+        platform: 'Win32',
+        viewport: { width: 1280, height: 720 },
+      },
+      dom: {
+        selector: 'html > body > form > input#name',
+        html: '<input id="name" value="x">',
+        className: 'field',
+        tagName: 'input',
+        isFocused: true,
+      },
+    };
+
+    const normalized = normalizeBoundedSnapshot(snapshot, 1700000000123);
+    assert.equal(normalized.environment.url, snapshot.environment.url);
+    assert.equal(normalized.environment.title, snapshot.environment.title);
+    assert.equal(normalized.environment.browser, snapshot.environment.browser);
+    assert.equal(normalized.environment.platform, snapshot.environment.platform);
+    assert.deepEqual(normalized.environment.viewport, snapshot.environment.viewport);
+    assert.equal(normalized.environment.timestamp, 1700000000123);
+    assert.deepEqual(normalized.dom, snapshot.dom);
+  });
+
+  test('observation envelope separates payload, acquisition and browser provenance', () => {
+    const snapshot = snapshotProbe();
+    const result: InjectionResultLike = { frameId: 0, documentId: 'abc-doc' };
+    const observation = makeBoundedObservation(snapshot, result, 7, 1700000000123);
+
+    assert.equal(observation.acquisition, 'chrome-scripting');
+    assert.equal(observation.provenance.tabId, 7);
+    assert.equal(observation.provenance.frameId, 0);
+    assert.equal(observation.provenance.documentId, 'abc-doc');
+    assert.deepEqual(observation.payload, normalizeBoundedSnapshot(snapshot, 1700000000123));
+  });
+
+  test('observation envelope does not invent absent browser identities', () => {
+    const snapshot = snapshotProbe();
+    const result: InjectionResultLike = { frameId: 0 };
+    const observation = makeBoundedObservation(snapshot, result, 3, 0);
+
+    assert.equal(observation.provenance.tabId, 3);
+    assert.equal(observation.provenance.frameId, 0);
+    assert.equal(observation.provenance.documentId, undefined);
+    assert.equal(observation.provenance.worldId, undefined);
   });
 });

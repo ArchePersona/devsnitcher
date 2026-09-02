@@ -32,6 +32,13 @@ For the encrypted cache, focused verification should establish at minimum:
 - malformed cache-write payloads are rejected
 - SNITCH can consume a valid encrypted cached record
 
+For the DEVPEEPER Chrome-mediated bounded observation, focused verification should establish at minimum:
+
+- the bounded probe returns plain serializable data with no `window.postMessage` transport
+- a Chrome-mediated snapshot normalizes into `EnvironmentInfo`/`DomContext` (timestamp added)
+- the observation envelope separates payload, acquisition mechanism and browser provenance
+- absent browser identities (e.g. `documentId`) are not invented
+
 Keep this coverage proportional. Do not build a large mock framework solely to exercise browser APIs that are better proven manually.
 
 ---
@@ -126,6 +133,20 @@ AES-GCM authentication failure should be treated as an unusable cache record, no
 
 ---
 
+## DEVPEEPER bounded-observation proof
+
+Environment/DOM now comes from a Chrome-mediated bounded probe, not the page.
+
+1. Open the test page and generate DOM/focus evidence.
+2. Wait at least one rolling refresh interval so the probe repopulates the cache.
+3. From page JavaScript, attempt to post a forged `EVIDENCE_RESULT` claiming a different environment/title/DOM.
+4. Click **SNITCH** and confirm the report's environment/title/DOM match the real page (the Chrome probe) rather than the forged values.
+5. Confirm the bounded probe starts no listeners and the extension executes it through `chrome.scripting.executeScript` (visible in the background/content-script bundle).
+
+This proves the bounded return path is Chrome-authenticated, not page-authored.
+
+---
+
 ## Trust-boundary regression proof
 
 The page must not be able to invoke the privileged `SNITCH` flow through `window.postMessage` or through a tab-relayed runtime message.
@@ -154,11 +175,13 @@ This regression proof protects the privileged-action boundary between untrusted 
 
 Do **not** use successful encrypted-cache or SNITCH-boundary tests as proof that page evidence itself cannot be forged.
 
-The current page-facing evidence transport uses `window.postMessage` for `COLLECT_EVIDENCE` / `EVIDENCE_RESULT`. A hostile page script may attempt to fabricate an `EVIDENCE_RESULT` before the content bridge accepts it.
+Environment, focused DOM and current selection are browser-mediated: acquired through `chrome.scripting.executeScript` and returned in Chrome's `InjectionResult`, so a page calling `window.postMessage` cannot forge those bounded observations. Chrome authenticates the transport path; it does not make the underlying page-controlled DOM/focus state truthful.
+
+Console, network and JavaScript-error evidence still travel over the legacy page-facing `window.postMessage` transport for `COLLECT_EVIDENCE` / `EVIDENCE_RESULT`. A hostile page script may attempt to fabricate that console/network/error evidence before the content bridge accepts it.
 
 The encrypted cache begins protecting evidence only after that acceptance point.
 
-Treat page-evidence ingress authenticity as separate security work.
+Treat page-context console/network/error ingress authenticity as separate security work, planned for later DEVPEEPER milestones.
 
 ---
 

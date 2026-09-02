@@ -72,11 +72,13 @@ Screenshot capture remains tied to the user-triggered SNITCH path.
 
 Cache encryption protects accepted evidence while it is stored by the extension. It does not prove that every observation originally produced in page context is authentic.
 
-The current page-facing evidence bridge uses `window.postMessage`. A hostile webpage may attempt to fabricate evidence before the extension accepts and encrypts it.
+Environment, focused DOM and current selection are now acquired through `chrome.scripting.executeScript` and returned to the extension inside Chrome's `InjectionResult`, so a hostile page cannot forge those bounded observations by calling `window.postMessage`. Chrome authenticates that transport path; the page can still influence the underlying DOM/focus state it exposes.
+
+Console, network and JavaScript-error evidence still travel over the legacy page-facing `window.postMessage` bridge. A hostile webpage may attempt to fabricate that console/network/error evidence before the extension accepts and encrypts it. This console/network/error ingress remains unresolved pending later DEVPEEPER milestones.
 
 This is an evidence-integrity limitation, not a cloud-privacy change: the data still remains local unless the user chooses to paste the resulting report elsewhere.
 
-DEVSnitcher should not describe encrypted caching as end-to-end cryptographic provenance.
+DEVSnitcher should not describe encrypted caching as end-to-end cryptographic provenance, nor claim that Chrome-mediated execution makes page-controlled state semantically truthful.
 
 ---
 

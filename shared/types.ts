@@ -74,6 +74,8 @@ export type SnitchMessage =
   | { type: 'CACHE_STORED' }
   | { type: 'REFRESH_CACHE' }
   | { type: 'CACHE_REFRESHED' }
+  | { type: 'GET_TAB_ID' }
+  | { type: 'TAB_ID'; tabId: number }
   | { type: 'PING' }
   | { type: 'PONG' }
   | { type: 'SNITCH'; userNotes: string; screenshot: boolean }
