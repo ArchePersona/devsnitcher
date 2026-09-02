@@ -2,7 +2,7 @@
 
 DEVSnitcher is local-first.
 
-The extension captures browser evidence, maintains an encrypted browser-session cache, formats user-requested evidence into a report, holds it in a private DEVSnitcher buffer, and inserts it into an editable field when the user chooses **PASTE SNITCHSHOT**.
+The extension captures browser evidence, maintains an encrypted browser-session cache, formats user-requested evidence into a report, holds it in a private DEVSnitcher buffer, and writes it to your system OS clipboard when the user chooses **COPY SNITCHSHOT**.
 
 There is no DEVSnitcher cloud service in the 2.x extension.
 
@@ -18,7 +18,7 @@ There is no DEVSnitcher cloud service in the 2.x extension.
 - No AI vendor lock-in
 - No persistent evidence storage beyond the browser session
 
-Evidence stays in the browser unless the user pastes the report somewhere.
+Evidence stays in the browser unless the user copies the report to their clipboard and pastes it somewhere.
 
 ---
 
@@ -28,15 +28,13 @@ Nothing leaves the browser automatically.
 
 DEVSnitcher does not upload captured evidence to a DEVSnitcher backend.
 
-The user controls the next external step by using **PASTE SNITCHSHOT** to insert the report into an AI chat, issue tracker, support thread, text file, or other destination.
+The user controls the next external step by using **COPY SNITCHSHOT** to write the report to their system clipboard, then pasting it into an AI chat, issue tracker, support thread, text file, or other destination.
 
 ---
 
 ## Local rolling evidence cache
 
-DEVSnitcher observes debugging evidence before the user presses SNITCH so the resulting report can include the events that led up to the problem.
-
-The extension periodically moves an evidence snapshot into extension-owned browser-session storage. The trusted background service worker first validates the evidence payload, then encrypts accepted evidence with AES-256-GCM before the cache record is written.
+DEVSnitcher's content bridge repeatedly samples bounded environment/DOM context via a Chrome-mediated probe before the user presses SNITCH so the resulting report can include the page context that led up to the problem. This sampling is a bounded `chrome.scripting` probe — it does **not** attach the debugger; the Chromium/CDP observer attaches only after SNITCH is pressed and only to the selected tab.
 
 The cache is:
 
@@ -62,7 +60,7 @@ The privileged `SNITCH` action begins from the extension popup when the user cli
 
 The background service worker enforces that boundary directly: a `SNITCH` message arriving with a tab sender is refused. Page JavaScript is not allowed to initiate `SNITCH`, request screenshot capture through that command, or receive the privileged `SNITCH_RESULT` response.
 
-SNITCH normally reads and decrypts the existing local encrypted cache. If no usable cache exists, the extension may request an immediate local refresh as fallback.
+SNITCH starts a live observing session on the selected tab. It reads bounded context and runs a fresh bounded snapshot probe on that session tab rather than relying on a rolling cache for context. Nothing observes via the debugger before SNITCH is pressed.
 
 Screenshot capture remains tied to the user-triggered SNITCH path.
 
@@ -74,9 +72,9 @@ Cache encryption protects accepted evidence while it is stored by the extension.
 
 Environment, focused DOM and current selection are acquired through `chrome.scripting.executeScript` and returned to the extension inside Chrome's `InjectionResult`, so a hostile page cannot forge those bounded observations by calling `window.postMessage`. Chrome authenticates that transport path; the page can still influence the underlying DOM/focus state it exposes.
 
-Chromium-issued events — including console (`Runtime.consoleAPICalled`), runtime errors (`Runtime.exceptionThrown`) and network (`Network.*`) — are received through `chrome.debugger` attached to the **currently active tab only** to establish browser-observed provenance. The `debugger` permission is used deliberately for this; the extension does not monitor whole-browser targets. Chromium identifiers are provenance, not durable source identity.
+Chromium-issued events — including console (`Runtime.consoleAPICalled`), runtime errors (`Runtime.exceptionThrown`) and network (`Network.*`) — are received through `chrome.debugger` attached to the **SNITCH-selected tab only**, and only for the duration of the live session, to establish browser-observed provenance. The debugger is never attached before SNITCH (extension start, tab activation, navigation and popup-open do not attach it). The `debugger` permission is used deliberately for this; the extension does not monitor whole-browser targets. Chromium identifiers are provenance, not durable source identity.
 
-Console, runtime errors and network are all browser-observed and come only from that active-tab Chromium session; no page-authored value supplies authoritative evidence. Network retention is strictly bounded and failure-focused: only HTTP status `>= 400` or browser-reported failures (status `0`) are kept (never full-traffic logging), response bodies are fetched only for retained HTTP failures and truncated to 1000 characters, and history is bounded at 100 entries per active-tab session. The ordinary page's `fetch`/`XHR` are not monkey-patched, because no page-context network collector runs.
+Console, runtime errors and network are all browser-observed and come only from that SNITCH-session Chromium observer; no page-authored value supplies authoritative evidence. Network retention is strictly bounded and failure-focused: only HTTP status `>= 400` or browser-reported failures (status `0`) are kept (never full-traffic logging), response bodies are fetched only for retained HTTP failures and truncated to 1000 characters, and history is bounded at 100 entries per session. The ordinary page's `fetch`/`XHR` are not monkey-patched, because no page-context network collector runs.
 
 For all browser-mediated paths, Chrome authenticates the transport; it does not make page-controlled state truthful. Correlating page-visible state with a tab ID, URL, timestamp, or document identity does not promote it to browser-observed provenance. There is no page-reported evidence bus.
 
@@ -182,10 +180,10 @@ The extension may locally observe, validate, and encrypt debugging evidence befo
 The intended flow is:
 
 ```text
-Observe locally → Validate → Encrypt session cache → User clicks SNITCH → Decrypt locally → Redact → Report → Private DEVSnitcher buffer → User focuses an editable field → PASTE SNITCHSHOT
+User clicks SNITCH → Background observes the selected tab → Redact → Report → Private DEVSnitcher buffer → COPY SNITCHSHOT → System clipboard
 ```
 
-The report is held in a private DEVSnitcher session buffer and cleared only after a successful paste. Nothing is automatically uploaded by DEVSnitcher.
+The report is held in a private DEVSnitcher session buffer and the debugger is attached only for the live session; the buffer is cleared only after a confirmed clipboard write. A canceled session never resurrects. Nothing is automatically uploaded by DEVSnitcher.
 
 ---
 

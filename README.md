@@ -1,6 +1,6 @@
 # DEVSnitcher
 
-**Press SNITCH. Paste into AI.**
+**Press SNITCH. Copy into AI.**
 
 Browser bugs are annoying enough already.
 
@@ -24,9 +24,7 @@ Click **SNITCH**.
 
 DEVSnitcher builds a clean Markdown report from the browser evidence around the problem and holds it in a private DEVSnitcher buffer.
 
-Then focus an editable field (a chat input, issue comment, or text box), and use the popup's **PASTE SNITCHSHOT** to insert the report — exactly where your cursor is.
-
-Then paste it wherever you debug:
+Then press the popup's **COPY SNITCHSHOT** to write the report to your system clipboard and paste it wherever you debug:
 
 - ChatGPT
 - Claude
@@ -134,7 +132,7 @@ npm run dev
 
 DEVSnitcher is intentionally small and standalone.
 
-It captures browser-side evidence, redacts obvious secrets, turns the result into Markdown, and holds it in a private DEVSnitcher buffer until you paste it into an editable field with **PASTE SNITCHSHOT**.
+It captures browser-side evidence, redacts obvious secrets, turns the result into Markdown, and holds it in a private DEVSnitcher buffer until you press **COPY SNITCHSHOT** to write it to your system clipboard.
 
 There is no backend, no telemetry service, no AI call, and no required account.
 

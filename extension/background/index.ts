@@ -2,39 +2,40 @@ import { redactEvidence } from '../../redaction/index';
 import { buildMarkdownReport } from '../../report/markdown';
 import { captureScreenshot } from '../../collectors/screenshot';
 import { EvidenceCache, base64ToBytes, bytesToBase64, isEvidenceShape } from './cache';
-import { ActiveTabObserverController } from '../../devpeeper/active-observer';
+import { SnitchshotBuffer } from './snitchshot-buffer';
+import { SnitchSessionManager, type SnitchSessionContext } from './snitch-session';
 import { chromeDebuggerTransport } from '../../devpeeper/debugger-transport';
 import { snapshotProbe, type BoundedSnapshot } from '../../devpeeper/snapshot-probe';
 import {
   makeBoundedObservation,
   type InjectionResultLike,
 } from '../../devpeeper/observation';
-import { pasteReport } from './snitchshot-paste';
-import { SnitchshotBuffer } from './snitchshot-buffer';
-import type {
-  ConsoleEntry,
-  Evidence,
-  JsErrorEntry,
-  NetworkEntry,
-  SnitchMessage,
-} from '../../shared/types';
+import type { DomContext, EnvironmentInfo, SnitchMessage, SnitchUiState } from '../../shared/types';
 
 const CACHE_KEY_STORAGE = 'devsnitcher:evidence-cache-key:v1';
 
-// DEVPEEPER Chromium observation foundation. Owned here because chrome.debugger
-// is only available to trusted extension contexts. The observer follows the
-// active tab while the extension operates and accumulates bounded browser-
-// observed console/runtime-error evidence for the current active-tab session.
-// That accumulated evidence is the authoritative console/error source at
-// SNITCH time; page-authored console/jsErrors are ignored.
-//
-// The controller serializes every start/stop transition so concurrent
-// activation events cannot overlap in-flight attach/detach and leak multiple
-// debugger sessions (see devpeeper/active-observer.ts).
-const activeObserver = new ActiveTabObserverController(
-  () => chromeDebuggerTransport(),
-  isSupportedTabUrl,
-);
+// Bounded SNITCH session. DEVPEEPER attaches a debugger ONLY while a
+// user-initiated SNITCH session is live. There is no automatic active-tab
+// attachment and no observation before SNITCH. At most one live session exists
+// globally; its source tab is immutable and tab activation is never authority.
+const session = new SnitchSessionManager({
+  transport: () => chromeDebuggerTransport(),
+  isSupported: isSupportedTabUrl,
+  acquireBounded: probeBoundedObservation,
+  now: () => Date.now(),
+  scheduleTick: (cb, ms) => {
+    const id = window.setInterval(cb, ms);
+    return () => window.clearInterval(id);
+  },
+  onComplete: async (evidence, ctx) => {
+    const redacted = redactEvidence(evidence);
+    const report = buildMarkdownReport({
+      evidence: redacted,
+      userNotes: ctx.userNotes,
+    });
+    await snitchshot.fill(report, ctx.tabId);
+  },
+});
 
 chrome.storage.session
   .setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
@@ -56,8 +57,9 @@ const cache = new EvidenceCache(
 );
 
 // Private DEVSnitcher-owned SNITCHSHOT buffer. Global, session-scoped, restricted
-// to trusted contexts, and authoritative over the owned paste lifecycle. It is
-// cleared only by a successful PASTE SNITCHSHOT, never by tab switching.
+// to trusted contexts. It is the authoritative store for the clipboard release
+// lifecycle and is cleared only after a confirmed system clipboard write, never
+// by tab switching.
 const snitchshot = new SnitchshotBuffer({
   get: async (key) => chrome.storage.session.get(key),
   set: async (items) => {
@@ -68,19 +70,11 @@ const snitchshot = new SnitchshotBuffer({
   },
 });
 
-chrome.tabs.onActivated.addListener((activeInfo) => {
-  // Follow the active tab while the extension operates so browser-observed
-  // console/runtime events are not missed before SNITCH is pressed. Only one
-  // active-tab observer exists at a time; a tab change detaches the prior one.
-  void chrome.tabs
-    .get(activeInfo.tabId)
-    .then((tab) => activeObserver.follow(tab).catch(() => undefined))
-    .catch(() => undefined);
-});
-
 chrome.tabs.onRemoved.addListener((tabId) => {
   void cache.clear(tabId);
-  void activeObserver.handleRemoved(tabId);
+  // A closed source tab terminates its SNITCH session; it never migrates to
+  // another tab.
+  void session.handleRemoved(tabId);
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
@@ -178,90 +172,93 @@ chrome.runtime.onMessage.addListener(
       return true;
     }
 
-    if (msg?.type === 'SNITCHSHOT_STATUS') {
-      // Popup reads the buffer occupancy so it can present SNITCH or PASTE.
-      // Refuse tab-relayed senders so page/content scripts cannot probe the
-      // private buffer state.
+    if (msg?.type === 'GET_STATUS') {
+      // Popup derives its interactive state from authoritative background/session
+      // state. Refuse tab-relayed senders so page/content scripts cannot probe it.
       if (sender.tab) {
         sendResponse({
-          type: 'SNITCH_ERROR',
+          type: 'EVIDENCE_ERROR',
           error: 'Refused from a tab context.',
         } satisfies SnitchMessage);
         return false;
       }
-      snitchshot
-        .isOccupied()
-        .then((occupied) =>
-          sendResponse({ type: 'SNITCHSHOT_STATUS_RESULT', occupied } satisfies SnitchMessage),
-        )
-        .catch(() =>
-          sendResponse({ type: 'SNITCHSHOT_STATUS_RESULT', occupied: false } satisfies SnitchMessage),
+      void composeStatus().then((result) => sendResponse(result satisfies SnitchMessage));
+      return true;
+    }
+
+    if (msg?.type === 'CANCEL_SNITCH') {
+      // Only the trusted popup may cancel. Refuse tab-relayed senders.
+      if (sender.tab) {
+        sendResponse({
+          type: 'EVIDENCE_ERROR',
+          error: 'Refused from a tab context.',
+        } satisfies SnitchMessage);
+        return false;
+      }
+      void session
+        .cancel()
+        .then(() => sendResponse({ type: 'CANCEL_ACCEPTED' } satisfies SnitchMessage))
+        .catch((err) =>
+          sendResponse({
+            type: 'EVIDENCE_ERROR',
+            error: String(err),
+          } satisfies SnitchMessage),
         );
       return true;
     }
 
-    if (msg?.type === 'PASTE_SNITCHSHOT') {
-      // DEVSnitcher-owned paste: only the extension popup may invoke it. The
-      // buffer is read, the report is inserted into the active supported tab's
-      // focused editable target, and the buffer is cleared only on a confirmed
-      // successful insertion. A failed/hostile insertion cannot consume it.
+    if (msg?.type === 'GET_SNITCHSHOT') {
+      // The trusted popup fetches the pending report to write it to the ordinary
+      // OS clipboard. Content scripts / page cannot read the private buffer.
       if (sender.tab) {
         sendResponse({
-          type: 'PASTE_SNITCHSHOT_RESULT',
-          pasted: false,
+          type: 'EVIDENCE_ERROR',
           error: 'Refused from a tab context.',
         } satisfies SnitchMessage);
         return false;
       }
-
-      (async () => {
-        try {
-          const record = await snitchshot.peek();
-          if (!record) {
-            sendResponse({
-              type: 'PASTE_SNITCHSHOT_RESULT',
-              pasted: false,
-              error: 'No SNITCHSHOT is pending.',
-            } satisfies SnitchMessage);
-            return;
-          }
-
-          const tab = await getActiveTab();
-          const results = await chrome.scripting.executeScript({
-            target: { tabId: tab.id! },
-            world: 'MAIN',
-            func: pasteReport,
-            args: [record.report],
-          });
-          const outcome = results[0]?.result as
-            | { ok: boolean; reason?: string }
-            | undefined;
-
-          if (!outcome?.ok) {
-            // Retain the buffer so the user can retry.
-            sendResponse({
-              type: 'PASTE_SNITCHSHOT_RESULT',
-              pasted: false,
-              error: outcome?.reason ?? 'DEVSnitcher could not insert the report.',
-            } satisfies SnitchMessage);
-            return;
-          }
-
-          // Only a confirmed insertion consumes the SNITCHSHOT.
-          await snitchshot.clear();
+      void snitchshot
+        .peek()
+        .then((record) =>
+          record
+            ? sendResponse({
+                type: 'SNITCHSHOT_CONTENT',
+                report: record.report,
+              } satisfies SnitchMessage)
+            : sendResponse({
+                type: 'EVIDENCE_ERROR',
+                error: 'No SNITCHSHOT is pending.',
+              } satisfies SnitchMessage),
+        )
+        .catch((err) =>
           sendResponse({
-            type: 'PASTE_SNITCHSHOT_RESULT',
-            pasted: true,
-          } satisfies SnitchMessage);
-        } catch (err) {
-          // Retain the buffer on any failure so it is never lost.
-          sendResponse({
-            type: 'PASTE_SNITCHSHOT_RESULT',
-            pasted: false,
+            type: 'EVIDENCE_ERROR',
             error: String(err),
-          } satisfies SnitchMessage);
-        }
-      })();
+          } satisfies SnitchMessage),
+        );
+      return true;
+    }
+
+    if (msg?.type === 'CLIPBOARD_RELEASED') {
+      // The popup has written the report to the ordinary OS clipboard and only
+      // now confirms success. The private buffer is authoritative until this
+      // confirmation; once cleared, normal Ctrl+V works anywhere.
+      if (sender.tab) {
+        sendResponse({
+          type: 'EVIDENCE_ERROR',
+          error: 'Refused from a tab context.',
+        } satisfies SnitchMessage);
+        return false;
+      }
+      void snitchshot
+        .clear()
+        .then(() => sendResponse({ type: 'CLIPBOARD_CLEARED' } satisfies SnitchMessage))
+        .catch((err) =>
+          sendResponse({
+            type: 'EVIDENCE_ERROR',
+            error: String(err),
+          } satisfies SnitchMessage),
+        );
       return true;
     }
 
@@ -279,63 +276,54 @@ chrome.runtime.onMessage.addListener(
 
     (async () => {
       try {
-        // SNITCH gate: exactly one outstanding SNITCHSHOT is allowed globally.
-        // If already OCCUPIED, refuse without overwriting or discarding it.
+        // Does nothing until SNITCH is pressed. Two independent gates:
+        // the active session gate and the outstanding-SNITCHSHOT gate.
+        if (session.isObserving()) {
+          sendResponse({
+            type: 'SNITCH_ERROR',
+            error: 'A SNITCH session is already running.',
+          } satisfies SnitchMessage);
+          return;
+        }
+
         if (await snitchshot.isOccupied()) {
           sendResponse({
             type: 'SNITCH_ERROR',
-            error: 'SNITCHSHOT pending — paste it before taking another.',
+            error: 'SNITCHSHOT pending — copy it before taking another.',
           } satisfies SnitchMessage);
           return;
         }
 
         const tab = await getActiveTab();
 
-        // Establish the DEVPEEPER active-tab Chromium observation lifecycle.
-        // Await the serialized follow transition so browser-observed evidence is
-        // read only after the observer has settled (not while a start is still in
-        // flight). A startup failure must not block SNITCH itself, so it is
-        // swallowed here; browser evidence will simply be empty for that session.
-        try {
-          await activeObserver.follow(tab);
-        } catch {
-          // Observation startup failed; continue SNITCH with empty browser evidence.
-        }
-
-        await ensureContentScript(tab.id!);
-        const evidence = await getCachedEvidenceOrRefresh(tab.id!, tab.url!);
-
-        // Console, runtime-error and network evidence are browser-observed from
-        // the active-tab Chromium session only. The legacy page-reported
-        // evidence bus has been removed; no page-authored value is trusted here.
-        const observed = await currentBrowserObservedEvidence(tab.id!);
-        evidence.console = observed.console;
-        evidence.jsErrors = observed.jsErrors;
-        evidence.network = observed.network;
-
+        // Capture the requested screenshot at SNITCH time for the session report.
         const screenshot = msg.screenshot
           ? await captureScreenshot(tab.windowId)
           : null;
-        evidence.screenshot = screenshot;
 
-        // Persist the assembled (browser-observed) evidence into the encrypted
-        // cache so the cached record reflects the trusted evidence path.
-        await cache.store(tab.id!, tab.url!, evidence);
-
-        const redacted = redactEvidence(evidence);
-        const report = buildMarkdownReport({
-          evidence: redacted,
+        const started = await session.start({
+          tabId: tab.id!,
+          tabUrl: tab.url!,
+          windowId: tab.windowId,
           userNotes: msg.userNotes ?? '',
-        });
+          screenshot: msg.screenshot,
+          screenshotInfo: screenshot ?? undefined,
+        } satisfies SnitchSessionContext);
 
-        // The completed, redacted report becomes the outstanding SNITCHSHOT.
-        // Only after this succeeds does the buffer move EMPTY → OCCUPIED.
-        await snitchshot.fill(report, tab.id!);
+        if (!started) {
+          sendResponse({
+            type: 'SNITCH_ERROR',
+            error: 'A SNITCH session is already running.',
+          } satisfies SnitchMessage);
+          return;
+        }
 
+        // The session observes and completes asynchronously on evidence
+        // completion; the popup polls GET_STATUS to follow it.
         sendResponse({
-          type: 'SNITCH_RESULT',
-          report,
-          screenshotDataUrl: screenshot?.dataUrl,
+          type: 'SNITCH_ACCEPTED',
+          tabId: tab.id!,
+          windowId: tab.windowId,
         } satisfies SnitchMessage);
       } catch (err) {
         sendResponse({
@@ -348,6 +336,27 @@ chrome.runtime.onMessage.addListener(
     return true;
   },
 );
+
+async function composeStatus(): Promise<
+  | { type: 'STATUS_RESULT'; state: SnitchUiState; error?: string }
+  | { type: 'EVIDENCE_ERROR'; error: string }
+> {
+  try {
+    const error = session.getLastError() ?? undefined;
+    if (session.isObserving()) {
+      return { type: 'STATUS_RESULT', state: 'observing', error };
+    }
+    if (await snitchshot.isOccupied()) {
+      return { type: 'STATUS_RESULT', state: 'snitchshot_pending' };
+    }
+    return { type: 'STATUS_RESULT', state: 'idle', error };
+  } catch (err) {
+    return {
+      type: 'EVIDENCE_ERROR',
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
 
 async function getActiveTab(): Promise<chrome.tabs.Tab> {
   const tabs = await chrome.tabs.query({
@@ -382,85 +391,28 @@ function isSupportedTabUrl(url: string): boolean {
 }
 
 /**
- * Browser-observed console/runtime-error/network evidence from the active-tab
- * Chromium session. Empty when there is no live observer bound to `tabId`, so
- * evidence from a replaced or invalidated attachment is never reused.
+ * Acquires the bounded contextual fields (environment + DOM) for `tabId` via the
+ * Chrome-mediated DEVPEEPER bounded probe, run from this trusted extension
+ * context (chrome.scripting is unavailable to content scripts). This ties bounded
+ * acquisition to the session tab at SNITCH time rather than a rolling cache.
  */
-async function currentBrowserObservedEvidence(tabId: number): Promise<{
-  console: ConsoleEntry[];
-  jsErrors: JsErrorEntry[];
-  network: NetworkEntry[];
+async function probeBoundedObservation(tabId: number): Promise<{
+  environment: EnvironmentInfo;
+  dom: DomContext | null;
 }> {
-  const observer = activeObserver.liveFor(tabId);
-  if (observer) {
-    return {
-      console: observer.getConsoleEntries(),
-      jsErrors: observer.getJsErrorEntries(),
-      network: await observer.getNetworkEntries(),
-    };
-  }
-  return { console: [], jsErrors: [], network: [] };
-}
-
-async function pingContentScript(tabId: number): Promise<boolean> {
-  try {
-    const response = (await chrome.tabs.sendMessage(
-      tabId,
-      { type: 'PING' } satisfies SnitchMessage,
-    )) as SnitchMessage | undefined;
-    return response?.type === 'PONG';
-  } catch {
-    return false;
-  }
-}
-
-async function ensureContentScript(tabId: number): Promise<void> {
-  if (await pingContentScript(tabId)) return;
-
-  await chrome.scripting.executeScript({
+  const results = await chrome.scripting.executeScript<[], BoundedSnapshot>({
     target: { tabId },
-    files: ['content.js'],
+    world: 'ISOLATED',
+    func: snapshotProbe,
   });
-
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    if (await pingContentScript(tabId)) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+  const result = results[0] as
+    | (InjectionResultLike & { result?: BoundedSnapshot })
+    | undefined;
+  if (!result || !result.result) {
+    throw new Error('DEVPEEPER bounded probe returned no result');
   }
-
-  throw new Error(
-    'DEVSnitcher could not attach to this tab. The page may enforce a CSP that blocks injection, or the tab was opened before the extension was installed. Refresh the page and try again.',
-  );
-}
-
-async function getCachedEvidenceOrRefresh(
-  tabId: number,
-  url: string,
-): Promise<Evidence> {
-  try {
-    return await cache.load(tabId, url);
-  } catch {
-    await refreshEvidenceCache(tabId);
-    return cache.load(tabId, url);
-  }
-}
-
-async function refreshEvidenceCache(tabId: number): Promise<void> {
-  const response = (await chrome.tabs.sendMessage(
-    tabId,
-    { type: 'REFRESH_CACHE' } satisfies SnitchMessage,
-  )) as SnitchMessage | undefined;
-
-  if (!response) {
-    throw new Error('No response from content script');
-  }
-
-  if (response.type === 'EVIDENCE_ERROR') {
-    throw new Error(response.error);
-  }
-
-  if (response.type !== 'CACHE_REFRESHED') {
-    throw new Error('Unexpected response from content script');
-  }
+  const observation = makeBoundedObservation(result.result, result, tabId, Date.now());
+  return observation.payload;
 }
 
 async function getOrCreateCacheKey(): Promise<CryptoKey> {

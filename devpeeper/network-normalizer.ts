@@ -132,6 +132,11 @@ export class NetworkTracker {
     this.finalizeRequest(params.requestId ?? '');
   }
 
+  /** True when at least one problem request has been retained so far. */
+  hasRetainedEntries(): boolean {
+    return this.retained.length > 0;
+  }
+
   /** Finalizes any pending requests and returns retained entries plus ids that need a body. */
   finalize(): NetworkFinalizeResult {
     for (const id of [...this.pending.keys()]) this.finalizeRequest(id);

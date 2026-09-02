@@ -84,7 +84,8 @@ import {
 } from '../extension/background/cache';
 import { SnitchshotBuffer, SNITCHSHOT_BUFFER_KEY } from '../extension/background/snitchshot-buffer';
 import type { SnitchshotStorageLike } from '../extension/background/snitchshot-buffer';
-import { pasteReport } from '../extension/background/snitchshot-paste';
+import { SnitchSessionManager, HARVEST_WINDOW_MS } from '../extension/background/snitch-session';
+import type { SnitchSessionContext } from '../extension/background/snitch-session';
 import { snapshotProbe, type BoundedSnapshot } from '../devpeeper/snapshot-probe';
 import {
   makeBoundedObservation,
@@ -92,7 +93,6 @@ import {
   type InjectionResultLike,
 } from '../devpeeper/observation';
 import { ChromiumObserver } from '../devpeeper/chromium';
-import { ActiveTabObserverController } from '../devpeeper/active-observer';
 import type { DebuggerTarget, DebuggerTransport } from '../devpeeper/debugger-transport';
 import { normalizeConsoleApi, normalizeExceptionThrown } from '../devpeeper/runtime-normalizer';
 import type { Evidence } from '../shared/types';
@@ -1028,120 +1028,6 @@ describe('DEVPEEPER Chromium observation foundation', () => {
   });
 });
 
-describe('DEVPEEPER active-tab observation controller', () => {
-  interface MockTransport extends DebuggerTransport {
-    attachCalls: DebuggerTarget[];
-    detachCalls: DebuggerTarget[];
-    attachLatencyMs: number;
-    failCommands: Set<string>;
-  }
-
-  function makeControllerTransport(): MockTransport {
-    const transport: MockTransport = {
-      attachCalls: [],
-      detachCalls: [],
-      attachLatencyMs: 0,
-      failCommands: new Set(),
-      attach: async (target) => {
-        transport.attachCalls.push(target);
-        if (transport.attachLatencyMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, transport.attachLatencyMs));
-        }
-      },
-      detach: async (target) => {
-        transport.detachCalls.push(target);
-      },
-      sendCommand: async (_target, method) => {
-        if (transport.failCommands.has(method)) throw new Error(`command failed: ${method}`);
-        return {};
-      },
-      onEvent: () => () => undefined,
-      onDetach: () => () => undefined,
-    };
-    return transport;
-  }
-
-  function makeController() {
-    const transport = makeControllerTransport();
-    const controller = new ActiveTabObserverController(() => transport, () => true);
-    return { transport, controller };
-  }
-
-  test('concurrent activation does not leak multiple debugger attachments', async () => {
-    const { transport, controller } = makeController();
-    transport.attachLatencyMs = 25;
-
-    // Request tab A, then request tab B before A's startup finishes.
-    const first = controller.follow({ id: 1, url: 'https://a.example' });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    const second = controller.follow({ id: 2, url: 'https://b.example' });
-    await Promise.all([first, second.catch(() => undefined)]);
-
-    // Both tabs were followed, but only one debugger session may remain.
-    assert.equal(transport.attachCalls.length, 2);
-    assert.equal(transport.detachCalls.length, 1, 'superseded observer must be detached');
-    const netAttached = transport.attachCalls.length - transport.detachCalls.length;
-    assert.equal(netAttached, 1, 'at most one debugger attachment may remain');
-
-    // The superseded observer (tab A) was the one detached.
-    assert.deepEqual(transport.detachCalls[0], { tabId: 1 });
-
-    // The tracked observer corresponds to the latest active tab (B).
-    assert.equal(controller.attachedTabId, 2);
-    assert.equal(controller.isRunning(), true);
-    assert.ok(controller.liveFor(2), 'live observer must be bound to the latest tab');
-    assert.equal(controller.liveFor(1), null, 'superseded tab must have no live observer');
-  });
-
-  test('following an unsupported tab detaches any current observer', async () => {
-    const { transport } = makeController();
-    const isSupported = (url: string) => !url.startsWith('chrome://');
-    const ctrl = new ActiveTabObserverController(() => transport, isSupported);
-
-    await ctrl.follow({ id: 1, url: 'https://a.example' });
-    assert.equal(ctrl.isRunning(), true);
-
-    await ctrl.follow({ id: 3, url: 'chrome://settings' });
-    assert.equal(ctrl.attachedTabId, undefined, 'unsupported tab must clear the observer');
-    assert.equal(ctrl.isRunning(), false);
-    const netAttached = transport.attachCalls.length - transport.detachCalls.length;
-    assert.equal(netAttached, 0, 'unsupported transition must detach the prior observer');
-  });
-
-  test('failed startup does not leave an untracked observer', async () => {
-    const { transport, controller } = makeController();
-    transport.failCommands.add('Network.enable');
-
-    await assert.rejects(() => controller.follow({ id: 4, url: 'https://d.example' }));
-    assert.equal(controller.attachedTabId, undefined, 'no observer may be tracked after failure');
-    assert.equal(controller.isRunning(), false);
-    const netAttached = transport.attachCalls.length - transport.detachCalls.length;
-    assert.equal(netAttached, 0, 'failed startup must detach (nothing left attached)');
-  });
-
-  test('awaiting follow() waits for delayed startup before evidence is readable (BUG C)', async () => {
-    const { transport, controller } = makeController();
-    transport.attachLatencyMs = 40;
-
-    // A SNITCH-equivalent read must not run before the transition settles: while
-    // the follow is still in flight, no evidence is readable from the observer.
-    const pending = controller.follow({ id: 7, url: 'https://e.example' });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(
-      controller.liveFor(7),
-      null,
-      'evidence must not be readable while observer startup is still in flight',
-    );
-
-    // After the transition settles, the observer is live and evidence is readable.
-    await pending;
-    assert.ok(
-      controller.liveFor(7),
-      'awaiting the follow transition yields a live, evidence-ready observer',
-    );
-    assert.equal(controller.liveFor(7)?.getConsoleEntries().length, 0);
-  });
-});
 
 
 describe('DEVPEEPER browser-observed console + runtime errors', () => {
@@ -1789,11 +1675,11 @@ describe('SNITCHSHOT private buffer lifecycle', () => {
     const buffer = makeBuffer(storage);
     await buffer.fill('# KEEP ME', 1);
 
-    // Simulate a failed paste (no clear called), then a retry still works and
-    // the buffer still holds the original report.
+    // Simulate a failed clipboard write (no clear called); the buffer still
+    // holds the original report so the user can retry.
     const record = await buffer.peek();
     assert.equal(record?.report, '# KEEP ME');
-    assert.ok(record, 'buffer must remain intact after a failed paste');
+    assert.ok(record, 'buffer must remain intact after a failed clipboard write');
   });
 
   test('tab switching does not clear the outstanding SNITCHSHOT', async () => {
@@ -1812,40 +1698,246 @@ describe('SNITCHSHOT private buffer lifecycle', () => {
   });
 });
 
-describe('SNITCHSHOT owned paste', () => {
-  test('returns not-ok with a reason when no editable target is focused', () => {
-    // jsdom's document.body is not content-editable and not an input/textarea.
-    document.body.innerHTML = '';
-    const result = pasteReport('report text');
-    assert.equal(result.ok, false);
-    assert.ok(result.reason);
+describe('bounded SNITCH session lifecycle', () => {
+  interface SessionMockTransport extends DebuggerTransport {
+    attachCalls: DebuggerTarget[];
+    detachCalls: DebuggerTarget[];
+    failCommands: Set<string>;
+  }
+
+  function makeSessionTransport(): SessionMockTransport {
+    const transport: SessionMockTransport = {
+      attachCalls: [],
+      detachCalls: [],
+      failCommands: new Set(),
+      attach: async (target) => {
+        transport.attachCalls.push(target);
+      },
+      detach: async (target) => {
+        transport.detachCalls.push(target);
+      },
+      sendCommand: async (_target, method) => {
+        if (transport.failCommands.has(method)) throw new Error(`command failed: ${method}`);
+        return {};
+      },
+      onEvent: () => () => undefined,
+      onDetach: () => () => undefined,
+    };
+    return transport;
+  }
+
+  function makeSessionDeps(overrides: Partial<{
+    transport: SessionMockTransport;
+    acquireBounded: () => Promise<{ environment: Evidence['environment']; dom: Evidence['dom'] }>;
+    onComplete: (evidence: Evidence, ctx: SnitchSessionContext) => Promise<void>;
+    onCancel?: (ctx: SnitchSessionContext) => void;
+  }> = {}) {
+    const transport = overrides.transport ?? makeSessionTransport();
+    const now = (() => {
+      let t = 0;
+      return { now: () => t, advance: (ms: number) => (t += ms) };
+    })();
+    const ticks: Array<() => void> = [];
+    const clock = now;
+    const deps = {
+      transport: () => transport,
+      isSupported: (url: string) => !url.startsWith('chrome://'),
+      acquireBounded:
+        overrides.acquireBounded ??
+        (async () => ({
+          environment: {
+            url: 'https://a.example',
+            title: 'A',
+            browser: 'Chrome',
+            platform: 'Test',
+            viewport: { width: 1280, height: 720 },
+            timestamp: 1,
+          },
+          dom: null,
+        })),
+      now: clock.now,
+      scheduleTick: (cb: () => void) => {
+        ticks.push(cb);
+        return () => {
+          const i = ticks.indexOf(cb);
+          if (i >= 0) ticks.splice(i, 1);
+        };
+      },
+      onComplete:
+        overrides.onComplete ??
+        (async () => {
+          /* no-op */
+        }),
+      ...(overrides.onCancel ? { onCancel: overrides.onCancel } : {}),
+    };
+    const session = new SnitchSessionManager(deps);
+    return { transport, deps, session, clock, ticks };
+  }
+
+  function ctx(overrides: Partial<SnitchSessionContext> = {}): SnitchSessionContext {
+    return {
+      tabId: 1,
+      tabUrl: 'https://a.example',
+      userNotes: '',
+      screenshot: false,
+      ...overrides,
+    };
+  }
+
+
+  test('no debugger attaches without SNITCH (no auto-attach), and idle has no observer', () => {
+    const { transport, session } = makeSessionDeps();
+    // A fresh manager is idle and owns no attachment.
+    assert.equal(session.isObserving(), false);
+    assert.equal(session.attachedTabId(), undefined);
+    assert.equal(transport.attachCalls.length, 0, 'nothing attaches until SNITCH');
+    assert.equal(transport.detachCalls.length, 0);
   });
 
-  test('inserts into a focused textarea at the caret and replaces selection', () => {
-    const textarea = document.createElement('textarea');
-    (textarea as HTMLTextAreaElement).value = 'prefix|suffix';
-    const start = 'prefix'.length;
-    const end = 'prefix'.length;
-    (textarea as HTMLTextAreaElement).selectionStart = start;
-    (textarea as HTMLTextAreaElement).selectionEnd = end;
-    document.body.innerHTML = '';
-    document.body.appendChild(textarea);
-    textarea.focus();
+  test('SNITCH attaches only the selected tab and does not follow later activation', async () => {
+    const { transport, session, ticks } = makeSessionDeps();
+    await session.start(ctx({ tabId: 5, tabUrl: 'https://five.example' }));
 
-    const result = pasteReport('MID');
+    assert.ok(session.isObserving());
+    assert.equal(session.attachedTabId(), 5);
+    assert.equal(transport.attachCalls.length, 1);
+    assert.deepEqual(transport.attachCalls[0], { tabId: 5 });
 
-    assert.equal(result.ok, true);
-    assert.equal((textarea as HTMLTextAreaElement).value, 'prefixMID|suffix');
+    // Activating/observing a different tab must not move the session.
+    const snap = session.attachedTabId();
+    assert.equal(snap, 5, 'attached tab must be immutable across later activation');
+    assert.equal(ticks.length, 1, 'a poll is scheduled while observing');
+
+    await session.cancel();
+    assert.equal(session.isObserving(), false);
+    assert.equal(transport.detachCalls.length, 1, 'cancel detaches the observer');
   });
 
-  test('reports not-ok when the focused element is not editable', () => {
-    const div = document.createElement('div');
-    document.body.innerHTML = '';
-    document.body.appendChild(div);
-    div.setAttribute('tabindex', '0');
-    div.focus();
+  test('required evidence completion produces the report and detaches', async () => {
+    const captured: { evidence: Evidence | null } = { evidence: null };
+    const { transport, session, clock } = makeSessionDeps({
+      onComplete: async (evidence) => {
+        captured.evidence = evidence;
+      },
+    });
 
-    const result = pasteReport('report text');
-    assert.equal(result.ok, false);
+    await session.start(ctx());
+    assert.ok(session.isObserving());
+
+    // Bounded context + DevTools accumulate synchronously in the mock transport
+    // via the observer; advance past the window and pump the completion poll.
+    clock.advance(HARVEST_WINDOW_MS + 1);
+    await session.tick();
+
+    assert.ok(captured.evidence, 'a report must be produced once evidence completes');
+    assert.equal(captured.evidence!.environment.url, 'https://a.example');
+    assert.equal(session.isObserving(), false, 'session must detach after completion');
+    assert.equal(transport.attachCalls.length, 1);
+    assert.equal(transport.detachCalls.length, 1, 'completion must detach the debugger');
+  });
+
+  test('requested screenshot is carried into the completed evidence', async () => {
+    const captured: { evidence: Evidence | null } = { evidence: null };
+    const { session, clock } = makeSessionDeps({
+      onComplete: async (evidence) => {
+        captured.evidence = evidence;
+      },
+    });
+
+    await session.start(
+      ctx({
+        screenshot: true,
+        screenshotInfo: { dataUrl: 'data:image/png;base64,AAA', width: 1, height: 1 },
+      }),
+    );
+
+    clock.advance(HARVEST_WINDOW_MS + 1);
+    await session.tick();
+
+    assert.ok(captured.evidence, 'a report must be produced once evidence completes');
+    assert.equal(captured.evidence!.screenshot?.dataUrl, 'data:image/png;base64,AAA');
+    assert.equal(captured.evidence!.screenshot?.width, 1);
+  });
+
+  test('CANCEL detaches and does not resurrect after switching tabs', async () => {
+    const { transport, session } = makeSessionDeps();
+    await session.start(ctx({ tabId: 3 }));
+    assert.ok(session.isObserving());
+
+    const canceled = await session.cancel();
+    assert.equal(canceled, true);
+    assert.equal(session.isObserving(), false, 'cancel must return the manager to idle');
+    assert.equal(session.attachedTabId(), undefined);
+    assert.equal(transport.detachCalls.length, 1, 'cancel must detach');
+
+    // Tab switching (no session authority) and a stale handleRemoved must not
+    // resurrect the terminated session.
+    await session.handleRemoved(3);
+    await session.cancel();
+    assert.equal(session.isObserving(), false);
+    assert.equal(session.attachedTabId(), undefined);
+    assert.equal(transport.attachCalls.length, 1, 'no re-attach after terminal cancel');
+    assert.equal(transport.detachCalls.length, 1);
+  });
+
+  test('a second SNITCH while one session is live is refused', async () => {
+    const { transport, session } = makeSessionDeps();
+    await session.start(ctx({ tabId: 1 }));
+    const second = await session.start(ctx({ tabId: 2 }));
+    assert.equal(second, false, 'one live session is enforced globally');
+    assert.equal(session.attachedTabId(), 1);
+    assert.equal(transport.attachCalls.length, 1, 'no second observer attached');
+  });
+
+  test('closing the source tab terminates the session without migration', async () => {
+    const { transport, session } = makeSessionDeps();
+    await session.start(ctx({ tabId: 7 }));
+    await session.handleRemoved(7);
+    assert.equal(session.isObserving(), false);
+    assert.equal(transport.detachCalls.length, 1);
+    assert.equal(transport.attachCalls.length, 1, 'session never migrates to another tab');
+  });
+});
+
+describe('SNITCHSHOT clipboard release', () => {
+  function makeMemoryStorage(): SnitchshotStorageLike & { store: Map<string, unknown> } {
+    const store = new Map<string, unknown>();
+    return {
+      store,
+      get: async (key) => ({ [key]: store.get(key) }),
+      set: async (items) => {
+        for (const [k, v] of Object.entries(items)) store.set(k, v);
+      },
+      remove: async (key) => {
+        store.delete(key);
+      },
+    };
+  }
+
+  function makeBuffer(storage: SnitchshotStorageLike & { store: Map<string, unknown> }) {
+    return new SnitchshotBuffer(storage);
+  }
+
+  test('successful system clipboard transfer clears the private SNITCHSHOT', async () => {
+    const storage = makeMemoryStorage();
+    const buffer = makeBuffer(storage);
+    await buffer.fill('# RELEASE ME', 1);
+
+    // Simulate the confirmed OS clipboard write, then the release confirmation.
+    assert.equal(storage.store.has(SNITCHSHOT_BUFFER_KEY), true);
+    await buffer.clear();
+    assert.equal(storage.store.has(SNITCHSHOT_BUFFER_KEY), false, 'buffer cleared after release');
+    assert.equal(await buffer.isOccupied(), false);
+  });
+
+  test('failed clipboard transfer preserves the private SNITCHSHOT', async () => {
+    const storage = makeMemoryStorage();
+    const buffer = makeBuffer(storage);
+    await buffer.fill('# KEEP ME', 1);
+
+    // A failed write leaves the buffer untouched so the user can retry.
+    assert.equal((await buffer.peek())?.report, '# KEEP ME');
+    assert.equal(await buffer.isOccupied(), true);
+    assert.equal(storage.store.has(SNITCHSHOT_BUFFER_KEY), true);
   });
 });

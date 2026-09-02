@@ -76,8 +76,10 @@ textarea:focus { outline: none; border-color: var(--accent); }
 .snitch:active { transform: translateY(1px); }
 .snitch:disabled { background: #555; cursor: progress; }
 .snitch-label { font-size: 16px; }
-#paste { background: #275a9c; }
-#paste:hover { background: #1f4a81; }
+.snitch.cancel { background: #8a2233; }
+.snitch.cancel:hover { background: #6d1a28; }
+.snitch.copy { background: #275a9c; }
+.snitch.copy:hover { background: #1f4a81; }
 .snitch-state { font-size: 11px; font-weight: 500; opacity: .85; }
 
 .result { font-size: 12px; color: var(--muted); min-height: 16px; margin: 0; text-align: center; }

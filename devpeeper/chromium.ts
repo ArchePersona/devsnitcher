@@ -157,6 +157,15 @@ export class ChromiumObserver implements ObservationAdapter {
   }
 
   /**
+   * Cheap completion probe: true when at least one problem request has been
+   * retained so far. Avoids the cost of finalizing + body-fetching during
+   * session polling; the full network evidence is read once at finalize time.
+   */
+  hasNetworkEntries(): boolean {
+    return this.networkTracker.hasRetainedEntries();
+  }
+
+  /**
    * Bounded accumulated network history for the current active-tab session.
    * Finalizes any in-flight requests and fetches bounded response bodies for the
    * retained HTTP failures. A missing/failed body leaves the preview empty and

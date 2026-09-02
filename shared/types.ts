@@ -66,6 +66,9 @@ export interface ReportInput {
 
 export type ReportFormat = 'markdown' | 'json';
 
+/** High-level, background-owned interaction state surfaced to the popup. */
+export type SnitchUiState = 'idle' | 'observing' | 'snitchshot_pending';
+
 export type SnitchMessage =
   | { type: 'EVIDENCE_ERROR'; error: string }
   | { type: 'CACHE_EVIDENCE'; evidence: Evidence }
@@ -83,9 +86,13 @@ export type SnitchMessage =
   | { type: 'PING' }
   | { type: 'PONG' }
   | { type: 'SNITCH'; userNotes: string; screenshot: boolean }
-  | { type: 'SNITCH_RESULT'; report: string; screenshotDataUrl?: string }
+  | { type: 'SNITCH_ACCEPTED'; tabId: number; windowId?: number }
   | { type: 'SNITCH_ERROR'; error: string }
-  | { type: 'SNITCHSHOT_STATUS' }
-  | { type: 'SNITCHSHOT_STATUS_RESULT'; occupied: boolean }
-  | { type: 'PASTE_SNITCHSHOT' }
-  | { type: 'PASTE_SNITCHSHOT_RESULT'; pasted: boolean; error?: string };
+  | { type: 'GET_STATUS' }
+  | { type: 'STATUS_RESULT'; state: SnitchUiState; error?: string }
+  | { type: 'CANCEL_SNITCH' }
+  | { type: 'CANCEL_ACCEPTED' }
+  | { type: 'GET_SNITCHSHOT' }
+  | { type: 'SNITCHSHOT_CONTENT'; report: string }
+  | { type: 'CLIPBOARD_RELEASED' }
+  | { type: 'CLIPBOARD_CLEARED' };

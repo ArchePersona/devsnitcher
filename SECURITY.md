@@ -25,21 +25,21 @@ DEVSnitcher is designed around these constraints:
 - No DEVSnitcher backend
 - No cloud upload
 - No telemetry by default
-- DEVSnitcher-owned SNITCHSHOT paste into an editable field, initiated from the popup
+- DEVSnitcher-owned SNITCHSHOT copy to the system clipboard, initiated from the popup
 - Best-effort redaction before report generation
 - User decides where the report is pasted
 - Only the extension popup may initiate the privileged `SNITCH` action
 - Background explicitly refuses `SNITCH` messages that arrive with a tab sender
 - The private SNITCHSHOT buffer is stored in trusted, session-scoped extension storage; page JavaScript and content scripts cannot read or clear it
-- `PASTE SNITCHSHOT` is popup-initiated, refused when relayed from a tab, and the buffer is cleared only after a confirmed successful insertion
+- `COPY SNITCHSHOT` is popup-initiated, refused when relayed from a tab, and the buffer is cleared only after a confirmed successful system-clipboard write
 - Page JavaScript must not be able to invoke privileged extension actions through the content bridge
 - Cache-write evidence is shape-validated before encryption
 - Accepted rolling evidence is encrypted before it is written to extension session storage
 - The cache encryption key remains in trusted extension context
 - Per-tab cache records are cleared on tab close and navigation/load
 - Environment/DOM observations are acquired through `chrome.scripting.executeScript` and carried back in Chrome's `InjectionResult`, not through a page-authored message
-- Chromium observations are acquired through `chrome.debugger` attached to the active tab only, with browser-issued provenance; the `debugger` permission is required for this browser-observed path
-- Browser-observed console, runtime-error and network evidence comes only from the trusted Chromium observer bound to the active tab; no page-authored value supplies authoritative evidence
+- Chromium observations are acquired through `chrome.debugger` attached only to the SNITCH-selected tab and only for the live session (never before SNITCH, never on tab activation), with browser-issued provenance; the `debugger` permission is required for this browser-observed path
+- Browser-observed console, runtime-error and network evidence comes only from the trusted Chromium observer bound to the SNITCH-selected tab during the live session; no page-authored value supplies authoritative evidence
 - Chromium identifiers are provenance, not durable source identity (no `SourceIdentity`, no per-navigation source rollover)
 
 The legacy `window.postMessage` page-evidence bus has been removed. There is no page-facing message bridge carrying evidence, no MAIN-world evidence collector is injected, and DEVSnitcher posts no evidence protocol the page can participate in. It is not a general command channel into the extension service worker.
@@ -63,7 +63,7 @@ DEVSnitcher therefore treats page-controlled messages as untrusted input. Page J
 The intended privileged path begins with an explicit user action in the extension popup.
 
 ```text
-User clicks SNITCH → Popup → Background → Decrypt cache → Redact → Report → Private buffer → PASTE SNITCHSHOT → Focused field
+User clicks SNITCH → Popup → Background → Session observer → Redact → Report → Private buffer → COPY SNITCHSHOT → System clipboard
 ```
 
 The background service worker enforces the popup-only boundary directly. A `SNITCH` message carrying a `sender.tab` is refused rather than resolved as an authorized source tab.
@@ -105,13 +105,13 @@ It does not authenticate the original producer of all evidence inside page conte
 
 DEVSnitcher has three evidence sources with different authenticity properties:
 
-**Browser-observed (Chromium/CDP).** Chromium-issued events — including console (`Runtime.consoleAPICalled`), runtime errors (`Runtime.exceptionThrown`) and network (`Network.requestWillBeSent`/`responseReceived`/`loadingFinished`/`loadingFailed`) — are received through `chrome.debugger` attached to the active tab only, and associated with that attachment. Browser-issued provenance (`tabId`, `frameId`, `loaderId`, `executionContextId`, `scriptId`, `requestId`, `timestamp`, etc.) is preserved. The `debugger` permission is required for this path. Network normalization retains only HTTP failures (status `>= 400`) or browser-reported failures (status `0`) and fetches response bodies only for retained HTTP failures, bounded to 1000 characters and 100 entries per active-tab session.
+**Browser-observed (Chromium/CDP).** Chromium-issued events — including console (`Runtime.consoleAPICalled`), runtime errors (`Runtime.exceptionThrown`) and network (`Network.requestWillBeSent`/`responseReceived`/`loadingFinished`/`loadingFailed`) — are received through `chrome.debugger` attached only to the tab selected by SNITCH and only for the duration of that session. NO observer is attached before SNITCH: tab activation, navigation, extension start and popup-open never attach the debugger. Browser-issued provenance (`tabId`, `frameId`, `loaderId`, `executionContextId`, `scriptId`, `requestId`, `timestamp`, etc.) is preserved. The `debugger` permission is required for this path. Network normalization retains only HTTP failures (status `>= 400`) or browser-reported failures (status `0`) and fetches response bodies only for retained HTTP failures, bounded to 1000 characters and 100 entries per session.
 
 **Chrome-mediated bounded observations (browser-returned).** Environment, focused DOM and current selection are acquired through `chrome.scripting.executeScript` from extension-controlled code. Chrome returns the result to the extension inside an `InjectionResult`, so a hostile page calling `window.postMessage` cannot forge or substitute these bounded observations.
 
 For both browser-mediated paths, Chrome authenticates the transport path to the extension. This does **not** make the observed page state semantically truthful: the webpage can still influence the DOM, focus, selection, console output, network behavior and lifecycle it exposes. Correlating page-visible state with a tab ID, URL, timestamp, or document identity does **not** promote it to browser-observed provenance.
 
-There is no page-reported evidence ingress. The legacy `window.postMessage` `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` bus has been removed, DEVSnitcher injects no MAIN-world evidence collector, and no authoritative evidence originates from a page-authored message. A hostile page has no DEVSnitch evidence protocol it can participate in by emitting `window.postMessage`; browser-observed console/runtime/network evidence comes only from the trusted Chromium observer bound to the active tab, events from another tab/debugger target are rejected, and stale observations from a detached/replaced attachment are not reused.
+There is no page-reported evidence ingress. The legacy `window.postMessage` `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` bus has been removed, DEVSnitcher injects no MAIN-world evidence collector, and no authoritative evidence originates from a page-authored message. A hostile page has no DEVSnitch evidence protocol it can participate in by emitting `window.postMessage`; browser-observed console/runtime/network evidence comes only from the trusted Chromium observer bound to the tab selected by SNITCH during the live session, events from another tab/debugger target are rejected, and stale observations from a detached/replaced attachment are not reused. So no observer exists before a SNITCH press: absent a live session the debugger is never attached.
 
 Therefore DEVSnitcher must not claim that Chrome-mediated observation makes page-controlled state truthful. Browser-observed provenance is provenance of observation, not truthfulness of the page's behavior.
 
@@ -170,7 +170,7 @@ Please report issues such as:
 - A secret not being redacted when it clearly should be
 - Evidence being sent over the network unexpectedly
 - Extension access on browser-internal pages
-- A SNITCHSHOT inserted into the wrong tab or a non-editable target treating a failed paste as success
+- The SNITCHSHOT buffer being cleared when the system clipboard write has not been confirmed, losing a pending report
 - A permission that is broader than needed
 - A content-script injection bug
 - A cross-origin evidence leak
@@ -182,7 +182,7 @@ Please report issues such as:
 - One tab consuming another tab's cached evidence
 - Stale cache surviving navigation and being consumed for a different page
 - Forged or untrusted page evidence being accepted as trusted extension output
-- The debugger being attached beyond the active tab, or CDP driving privileged/execution behavior rather than passive observation
+- The debugger being attached beyond the SNITCH-selected tab during a session, attached before any SNITCH press, or CDP driving privileged/execution behavior rather than passive observation
 - Page-visible state being mislabeled or promoted to browser-observed provenance by correlation
 - A Chromium observation associated with the wrong tab, or surviving after Chrome detaches the session
 - Page-authored `window.postMessage` traffic masquerading as a DEVSnitch evidence protocol (no such protocol exists)

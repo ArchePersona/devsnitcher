@@ -5,8 +5,8 @@ DEVSnitcher is built as a small browser extension with a strict local-first evid
 The core path is:
 
 ```text
-DEVPEEPER (bounded probe + Chromium observer) → Content Bridge → Background → Encrypted Session Cache
-User clicks SNITCH → Popup → Background → Decrypt Cache → Redaction → Report → Private Buffer → PASTE SNITCHSHOT
+DEVPEEPER (bounded probe + Chromium session observer) → Content Bridge → Background → report → Private Buffer
+User clicks SNITCH → Background attaches session observer → Redaction → Report → Private Buffer → COPY SNITCHSHOT → System clipboard
 ```
 
 The extension does not require a backend, account, dashboard, hosted service, or AI provider integration.
@@ -18,7 +18,7 @@ The extension does not require a backend, account, dashboard, hosted service, or
 The architecture exists to support one product action:
 
 ```text
-Press SNITCH. Paste into AI.
+Press SNITCH. Copy into AI.
 ```
 
 Everything else is secondary.
@@ -27,24 +27,19 @@ Everything else is secondary.
 
 ## Runtime flow
 
-1. DEVPEEPER's bounded probe observes environment, focused DOM and current selection through `chrome.scripting.executeScript` from extension-controlled code; Chrome returns the result inside its `InjectionResult`, not via a page-authored message.
-2. DEVPEEPER attaches a Chromium/CDP observer to the active tab through `chrome.debugger`, enabling the minimal `Page`, `Runtime` and `Network` domains. Browser-issued console (`Runtime.consoleAPICalled`), runtime-error (`Runtime.exceptionThrown`) and network (`Network.*`) events are normalized into DEVPEEPER observations with preserved provenance; the observer follows the active tab continuously. There is no legacy page bridge.
-3. DEVPEEPER normalizes the Chrome-mediated bounded observation and the content bridge assembles the evidence snapshot.
-4. The content bridge sends accepted evidence to the background service worker through the extension runtime.
-5. Background validates the evidence payload, encrypts valid evidence with AES-256-GCM, and writes only ciphertext plus required metadata to `chrome.storage.session`.
-6. User opens the popup, optionally enters a short description, and clicks **SNITCH**.
-7. Popup sends `SNITCH` to the background service worker.
-8. Background refuses tab-relayed `SNITCH` messages and resolves the active tab only for the popup-originated action.
-9. Background ensures the content script is present.
-10. Background prefers the existing encrypted cache; if no usable cache exists, it may request one immediate refresh.
-11. Background decrypts the cache inside trusted extension context and validates the decrypted evidence shape.
-12. Background assembles the active-tab Chromium session's browser-observed console/runtime/network evidence into the trusted evidence path, then persists the assembled evidence to the encrypted cache.
-13. Background optionally captures the user-requested screenshot.
-14. Background applies redaction and builds the report.
-15. Background stores the completed report as the outstanding SNITCHSHOT in the private buffer (occupied). A second SNITCH while occupied is refused from every tab.
-16. Popup shows the occupied state; the user focuses an editable field and uses **PASTE SNITCHSHOT**.
-17. Background injects a trusted paste operation that inserts the buffered report into the focused editable target.
-18. Only after a confirmed successful insertion does background clear the private buffer, making SNITCH available again.
+DEVPEEPER does nothing until an explicit **SNITCH** press. There is NO auto-attach: extension start, tab activation, navigation and popup-open never attach the debugger. The session state machine is `IDLE → SNITCH → OBSERVING → evidence complete → SNITCHSHOT_PENDING → clipboard release → IDLE`, and `OBSERVING → CANCEL → IDLE`.
+
+1. User opens the popup, optionally enters a short description, and clicks **SNITCH** on the tab they want observed.
+2. Popup sends `SNITCH` to the background service worker.
+3. Background refuses tab-relayed `SNITCH` messages, then checks two gates: no other live session is already observing, and no SNITCHSHOT is already pending. If a session is already live, SNITCH is refused; if a SNITCHSHOT is pending, SNITCH is refused until it is copied out.
+4. Background records the selected tab as the one and only session tab (immutable) and attaches a single Chromium/CDP observer to it through `chrome.debugger`, enabling the minimal `Page`, `Runtime` and `Network` domains.
+5. DEVPEEPER's bounded probe captures environment, focused DOM and current selection on that session tab through `chrome.scripting.executeScript`, returned in Chrome's `InjectionResult` (bounded context completes immediately once acquired).
+6. Browser-issued console (`Runtime.consoleAPICalled`), runtime-error (`Runtime.exceptionThrown`) and network (`Network.*`) events are normalized into observations while the live session runs. A surface completes when it has entries **OR** a bounded harvest window (`HARVEST_WINDOW_MS`) elapses — an empty surface is legitimate and complete, so the session never waits forever for an error.
+7. When the bound evidence is complete, background finalizes: stops the observer (detaches the debugger), applies redaction, and builds the report.
+8. Background stores the completed report as the outstanding SNITCHSHOT in the private buffer (occupied). A second SNITCH while occupied is refused from every tab.
+9. Popup shows the pending state; the user presses **COPY SNITCHSHOT**. The popup reads the report and writes it to the system clipboard via the OS clipboard API.
+10. Only after a confirmed successful clipboard write does background clear the private buffer, making SNITCH available again. A failed write retains the buffer.
+11. At any point during OBSERVING, **CANCEL** terminates the session: it detaches the debugger, discards the partial report, clears the buffer to empty, and the session never resurrects.
 
 ---
 
@@ -72,7 +67,7 @@ The page does not receive the cache key or decrypted cache contents. Malformed c
 
 DEVPEEPER has two distinct evidence sources, with different authenticity properties. There is no page-reported source.
 
-**Browser-observed (Chromium/CDP instrumentation).** Chromium-issued events are received through `chrome.debugger` and associated with the active-tab attachment. This covers console, runtime-error and failed/problem-network evidence. Acquisition mechanism: `chrome-debugger`. These carry browser-issued provenance (`tabId`, `frameId`, `loaderId`, `executionContextId`, `scriptId`, `requestId`, `timestamp`, etc.) obtained only through Chrome-controlled instrumentation.
+**Browser-observed (Chromium/CDP instrumentation).** Chromium-issued events are received through `chrome.debugger` and associated with a SNITCH session attachment. This covers console, runtime-error and failed/problem-network evidence. Acquisition mechanism: `chrome-debugger`. These carry browser-issued provenance (`tabId`, `frameId`, `loaderId`, `executionContextId`, `scriptId`, `requestId`, `timestamp`, etc.) obtained only through Chrome-controlled instrumentation. No observer exists before SNITCH — the debugger is attached only to the selected tab and only for the live session.
 
 **Browser-returned (Chrome-mediated bounded observations).** Environment, focused DOM and current selection are acquired through `chrome.scripting.executeScript` from extension-controlled code. Chrome returns the result directly to the extension in an `InjectionResult`; the page does not send these values over `window.postMessage`. A hostile page calling `window.postMessage` cannot substitute these bounded observations. Acquisition mechanism: `chrome-scripting`.
 
@@ -96,7 +91,9 @@ Responsibilities:
 - Accept optional user notes
 - Toggle optional screenshot capture
 - Display success or error state
-- Offer **SNITCH** when empty and **PASTE SNITCHSHOT** when a report is pending
+- Provide one dominant **SNITCH** action, replaced by **CANCEL** while observing and **COPY SNITCHSHOT** when a report is pending
+- Poll `GET_STATUS` while observing to reflect session state
+- Write the pending report to the system clipboard and confirm, then notify background
 
 The popup should stay simple.
 
@@ -109,23 +106,16 @@ The background service worker owns privileged coordination and the encrypted cac
 Responsibilities:
 
 - Enforce popup-only `SNITCH` authorization
-- Resolve the active tab for the popup action
-- Reject unsupported browser-internal pages
-- Ping or inject the content script when needed
-- Accept cache writes only through the expected extension runtime path
-- Validate cache-write evidence payloads before encryption
-- Generate/import the session cache key
-- Encrypt accepted evidence with AES-256-GCM before storage
-- Decrypt and validate valid tab-bound cache records for SNITCH
-- Remove per-tab cache records when tabs close or navigate/load a new page
-- Own the DEVPEEPER Chromium/CDP observer and attach it to the active tab (best-effort, isolated from SNITCH)
-- Follow the active tab (`chrome.tabs.onActivated`), detaching the prior observer and attaching the new supported active tab
-- Assemble the active-tab Chromium session's browser-observed console/runtime evidence into the trusted evidence path at SNITCH time (page-authored console/jsErrors ignored)
-- Stop the Chromium observer when its tab closes
-- Capture screenshot evidence when explicitly requested by SNITCH
+- Resolve the selected tab for the popup action and reject unsupported browser-internal pages
+- Manage the one live SNITCH session (immutable tab, never follows tab activation)
+- Attach a single Chromium/CDP observer to the session tab and stop it (detach) on completion or cancel
+- Enforce the global gates: one live session at a time, and SNITCH refused while a SNITCHSHOT is pending
+- Run the bounded probe on the session tab to acquire environment/DOM/selection
+- capture screenshot when explicitly requested by SNITCH
 - Apply redaction
 - Build the report payload
-- Return output to the popup
+- Own the private SNITCHSHOT buffer, clearing it only after a confirmed clipboard write
+- Respond to `GET_STATUS`, `CANCEL_SNITCH`, `GET_SNITCHSHOT` and `CLIPBOARD_RELEASED`
 
 The background worker should not become a dashboard, analytics layer, or hosted monitor.
 
@@ -140,13 +130,13 @@ It runs extension-controlled code that observes the browser and page through bro
 Current DEVPEEPER paths:
 
 - **Chrome-mediated bounded probe** — executes a small self-contained probe in the tab's isolated world through `chrome.scripting.executeScript`. Chrome returns the result in an `InjectionResult` carrying browser-issued provenance (`tabId`, `frameId`, `documentId`). The probe reads environment, focused DOM context and current selection, starts no listeners, and never uses `window.postMessage`. Acquisition mechanism: `chrome-scripting` (browser-returned).
-- **Chromium observation of console + runtime errors + network** — attaches a Chromium/CDP observer to the currently active tab through `chrome.debugger`, enables the minimal `Page`, `Runtime` and `Network` domains, and normalizes browser-issued events — `Page.frameNavigated`, `Runtime.consoleAPICalled`, `Runtime.exceptionThrown`, `Network.requestWillBeSent`, `Network.responseReceived`, `Network.loadingFinished`, `Network.loadingFailed` — into DEVPEEPER observations with preserved provenance. Console, runtime-error and network evidence are browser-observed. Acquisition mechanism: `chrome-debugger` (browser-observed). Active-tab scope is deliberate: it does not monitor whole-browser or attach to every target, frame, worker, or background process. Network normalization retains only HTTP failures (status `>= 400`) or browser-reported failures (status `0`), never full-traffic logging, bounded at 100 entries; response bodies are fetched via `Network.getResponseBody` only for retained HTTP failures and bounded to 1000 characters.
+- **Chromium observation of console + runtime errors + network** — attaches a Chromium/CDP observer to the tab selected by SNITCH through `chrome.debugger`, enabling the minimal `Page`, `Runtime` and `Network` domains, and normalizes browser-issued events — `Page.frameNavigated`, `Runtime.consoleAPICalled`, `Runtime.exceptionThrown`, `Network.requestWillBeSent`, `Network.responseReceived`, `Network.loadingFinished`, `Network.loadingFailed` — into DEVPEEPER observations with preserved provenance. Console, runtime-error and network evidence are browser-observed. Acquisition mechanism: `chrome-debugger` (browser-observed). Session-tab scope is deliberate: it attaches to exactly one tab, never monitors whole-browser, and never attaches to every target, frame, worker, or background process. Network normalization retains only HTTP failures (status `>= 400`) or browser-reported failures (status `0`), never full-traffic logging, bounded at 100 entries; response bodies are fetched via `Network.getResponseBody` only for retained HTTP failures and bounded to 1000 characters.
 
-The observer follows the currently active supported tab continuously (`chrome.tabs.onActivated`), so browser-observed console/runtime/network events are not missed before SNITCH is pressed. Only one active-tab observer exists at a time; switching tabs detaches the prior observer and attaches the new supported active tab, and browser-internal/unsupported pages are excluded. The observer accumulates bounded console (200), runtime-error (50) and network (100) history for the current active-tab session, cleared when the attachment is replaced, stopped or invalidated.
+Only one DEVPEEPER observer exists at a time, and only during a live SNITCH session. Nothing attaches before SNITCH: extension start, `chrome.tabs.onActivated`, navigation and popup-open never trigger a debugger attachment. The observer is permanently bound to the tab that was selected at SNITCH time — switching tabs never moves, restarts or resurrects the session. The observer accumulates bounded console (200), runtime-error (50) and network (100) history for the live session, cleared when the session is finalized or canceled. A session completes when its surfaces are complete: bounded context once acquired, and each of console/jsErrors/network when they have entries **OR** `HARVEST_WINDOW_MS` elapses (empty is legitimate and complete) — so a session that never produces an error still ends and detaches. `CANCEL` is terminal: it detaches and discards the partial report, and no later tab event can resurrect the session.
 
 The `debugger` permission is intentionally required for browser-observed provenance: DEVPEEPER uses Chromium instrumentation so observation authority comes from the browser boundary rather than page-authored JavaScript messages.
 
-Chromium identifiers are provenance, not durable source identity. DEVPEEPER does not implement a `SourceIdentity` object and does not create per-navigation source rollover; the active-tab attachment is the effective observation source. Network evidence is now browser-observed alongside console and runtime errors.
+Chromium identifiers are provenance, not durable source identity. DEVPEEPER does not implement a `SourceIdentity` object and does not create per-navigation source rollover; the SNITCH session attachment is the effective observation source. Network evidence is now browser-observed alongside console and runtime errors.
 
 ---
 
@@ -194,26 +184,27 @@ The cache is not an evidence-provenance system. It protects evidence after accep
 
 ---
 
-### SNITCHSHOT private buffer and owned paste
+### SNITCHSHOT private buffer and clipboard release
 
 There is exactly one outstanding SNITCHSHOT globally across DEVSnitcher.
 
-The completed, redacted Markdown report is stored in a DEVSnitcher-owned private buffer in trusted, session-scoped extension storage (`chrome.storage.session`, restricted to `TRUSTED_CONTEXTS`). The buffer holds the report plus minimal lifecycle metadata (`sourceTabId`, `createdAt`). It is the authoritative store for the paste lifecycle — the system clipboard is not a state store and does not gate SNITCH.
+The completed, redacted Markdown report is stored in a DEVSnitcher-owned private buffer in trusted, session-scoped extension storage (`chrome.storage.session`, restricted to `TRUSTED_CONTEXTS`). The buffer holds the report plus minimal lifecycle metadata (`sourceTabId`, `createdAt`). It is the authoritative store for the release lifecycle — the system clipboard is not a state store and does not gate SNITCH. The active session gate is **separate** from the outstanding-SNITCHSHOT buffer gate.
 
 ```text
 EMPTY
   │  SNITCH succeeds
   ▼
 OCCUPIED
-  │  PASTE SNITCHSHOT succeeds
+  │  COPY SNITCHSHOT succeeds
   ▼
 EMPTY
 ```
 
 - **SNITCH gate.** Before creating a SNITCHSHOT, background checks the buffer. If occupied, SNITCH is refused from every tab with a clear message; the existing report is neither overwritten nor discarded. The buffer is global, not per-tab: another tab's SNITCH is blocked until the pending SNITCHSHOT is consumed.
-- **Owned paste.** The popup's primary action becomes **PASTE SNITCHSHOT**. Background reads the buffer and injects a trusted, extension-initiated paste via `chrome.scripting.executeScript` into the currently active supported tab's focused editable target (text inputs/textareas and content-editable surfaces). It inserts at the caret and replaces a selection; it does not replace the whole field. The page never messages the extension to trigger paste.
-- **Consumption boundary.** The buffer is cleared only after the paste reports a confirmed successful insertion. A failed or hostile insertion retains the buffer so the user can retry.
-- **Cross-tab isolation of concern.** Other tabs continue normal DEVPEEPER observation while the buffer is occupied. Tab switching never clears or replaces the outstanding SNITCHSHOT; observation and SNITCHSHOT consumption are separate concerns.
+- **System clipboard release.** The popup's primary action becomes **COPY SNITCHSHOT**. The popup requests the pending report (non-tab sender only), writes it to the system OS clipboard (`navigator.clipboard`, which is unreliable from an MV3 service worker), then sends `CLIPBOARD_RELEASED`. Background reads the report for a non-tab sender and passes it back with `SNITCHSHOT_CONTENT`. The page never messages the extension to trigger a copy; tab-relayed `GET_SNITCHSHOT`/`CLIPBOARD_RELEASED` are refused.
+- **Consumption boundary.** The buffer is cleared only after the popup confirms a successful OS clipboard write. A failed write retains the buffer so the user can press COPY again. A report cleared only on confirmed delivery means "a SNITCHSHOT was copied to the clipboard" cannot be mistaken for a silent discard.
+
+SNITCH and clipboard release are separate concerns: SNITCH governs a live observing session, while the buffer gates a pending report. Tab switching never clears or replaces an outstanding SNITCHSHOT.
 
 ---
 
@@ -224,7 +215,7 @@ DEVPEEPER acquires evidence through two browser-mediated mechanisms (see the pag
 Current evidence coverage:
 
 - Environment, DOM context, selection — Chrome-mediated bounded probe (`chrome-scripting`, browser-returned)
-- Console, runtime errors, network — active-tab Chromium observer (`chrome-debugger`, browser-observed)
+- Console, runtime errors, network — SNITCH-session Chromium observer (`chrome-debugger`, browser-observed)
 - Screenshot
 
 Acquisition should answer one question:
@@ -261,7 +252,7 @@ Current output targets:
 - Markdown
 - JSON
 
-Markdown is the primary product format because it can be pasted directly into AI chats and issue trackers. The 2.0 report lifecycle produces the Markdown report and holds it in the private SNITCHSHOT buffer; it is delivered through the extension-owned **PASTE SNITCHSHOT** action, not the system clipboard.
+Markdown is the primary product format because it can be pasted directly into AI chats and issue trackers. The 2.0 report lifecycle produces the Markdown report, holds it in the private SNITCHSHOT buffer, and delivers it through the **COPY SNITCHSHOT** action to the system OS clipboard — not through a browser-field paste.
 
 ---
 
@@ -271,24 +262,29 @@ Typical extension messages include:
 
 ```text
 SNITCH
+SNITCH_ACCEPTED
+GET_STATUS
+STATUS_RESULT
+CANCEL_SNITCH
+CANCEL_ACCEPTED
+GET_SNITCHSHOT
+SNITCHSHOT_CONTENT
+CLIPBOARD_RELEASED
+CLIPBOARD_CLEARED
+CACHE_EVIDENCE
+CACHE_STORED
+REFRESH_CACHE
+CACHE_REFRESHED
 PING
 PONG
 GET_TAB_ID
 TAB_ID
 EVIDENCE_ERROR
-CACHE_EVIDENCE
-CACHE_STORED
-REFRESH_CACHE
-CACHE_REFRESHED
 GET_BOUNDED_OBSERVATION
 BOUNDED_OBSERVATION
-SNITCHSHOT_STATUS
-SNITCHSHOT_STATUS_RESULT
-PASTE_SNITCHSHOT
-PASTE_SNITCHSHOT_RESULT
 ```
 
-`SNITCH` belongs only to the extension message path initiated by the popup and is rejected when relayed from a tab. Cache messages belong to the extension runtime path. `GET_TAB_ID`/`TAB_ID` and `GET_BOUNDED_OBSERVATION`/`BOUNDED_OBSERVATION` are extension-internal orchestration between the content bridge and background. `SNITCHSHOT_STATUS`/`PASTE_SNITCHSHOT` are popup-initiated and are refused when relayed from a tab. The legacy `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` page-evidence protocol has been removed.
+The popup-only session messages are `SNITCH`, `GET_STATUS`, `CANCEL_SNITCH`, `GET_SNITCHSHOT` and `CLIPBOARD_RELEASED`; each is refused when relayed from a tab. Cache messages (`CACHE_EVIDENCE`/`CACHE_STORED`/`REFRESH_CACHE`/`CACHE_REFRESHED`) belong to the content-bridge rolling-cache path. `GET_TAB_ID`/`TAB_ID` and `GET_BOUNDED_OBSERVATION`/`BOUNDED_OBSERVATION` are extension-internal orchestration between the content bridge and background. The legacy `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` page-evidence protocol and the `PASTE_SNITCHSHOT` owned-paste protocol have been removed.
 
 ---
 
@@ -303,7 +299,7 @@ Current intended scope includes:
 "host_permissions": ["http://*/*", "https://*/*"]
 ```
 
-The `debugger` permission exists intentionally for browser-observed provenance: DEVPEEPER uses Chromium/CDP instrumentation (`chrome.debugger`) so observation authority comes from the browser boundary rather than page-authored JavaScript messages. It attaches only to the active tab and enables only the minimal `Page`, `Runtime` and `Network` domains. No unrelated permission was added.
+The `debugger` permission exists intentionally for browser-observed provenance: DEVPEEPER uses Chromium/CDP instrumentation (`chrome.debugger`) so observation authority comes from the browser boundary rather than page-authored JavaScript messages. It attaches only to the SNITCH-selected tab, only during a live session, and enables only the minimal `Page`, `Runtime` and `Network` domains. No unrelated permission was added.
 
 Browser-internal pages such as `chrome://`, `edge://`, and `chrome-extension://` should not be inspected.
 

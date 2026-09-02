@@ -1,8 +1,12 @@
-import type { SnitchMessage } from '../../shared/types';
+import type { SnitchMessage, SnitchUiState } from '../../shared/types';
+import { writeToClipboard } from '../../report/clipboard';
+
+const STATUS_POLL_MS = 500;
 
 document.addEventListener('DOMContentLoaded', () => {
   const snitchBtn = document.getElementById('snitch') as HTMLButtonElement;
-  const pasteBtn = document.getElementById('paste') as HTMLButtonElement;
+  const cancelBtn = document.getElementById('cancel') as HTMLButtonElement;
+  const copyBtn = document.getElementById('copy') as HTMLButtonElement;
   const notes = document.getElementById('notes') as HTMLTextAreaElement;
   const screenshotCb = document.getElementById('screenshot') as HTMLInputElement;
   const field = document.querySelector('.field') as HTMLElement;
@@ -10,23 +14,33 @@ document.addEventListener('DOMContentLoaded', () => {
   const stateEl = document.getElementById('state') as HTMLSpanElement;
   const resultEl = document.getElementById('result') as HTMLParagraphElement;
 
-  async function refreshStatus(): Promise<void> {
-    const response = (await chrome.runtime.sendMessage({
-      type: 'SNITCHSHOT_STATUS',
-    } satisfies SnitchMessage)) as SnitchMessage | undefined;
-    const occupied = response?.type === 'SNITCHSHOT_STATUS_RESULT' && response.occupied;
-    render(occupied);
+  let pollTimer: number | null = null;
+  let observedPending = false;
+
+  async function send(msg: SnitchMessage): Promise<SnitchMessage | undefined> {
+    return (await chrome.runtime.sendMessage(msg)) as SnitchMessage | undefined;
   }
 
-  function render(occupied: boolean): void {
-    snitchBtn.hidden = occupied;
-    pasteBtn.hidden = !occupied;
-    field.hidden = occupied;
-    screenshotRow.hidden = occupied;
+  function render(state: SnitchUiState): void {
+    const observing = state === 'observing';
+    const pending = state === 'snitchshot_pending';
+    const idle = state === 'idle';
 
-    if (occupied) {
+    snitchBtn.hidden = !idle;
+    cancelBtn.hidden = !observing;
+    copyBtn.hidden = !pending;
+
+    // The capture inputs are only meaningful while idle (choosing a snapshot).
+    if (field) field.hidden = !idle;
+    if (screenshotRow) screenshotRow.hidden = !idle;
+
+    if (observing) {
+      stateEl.textContent = 'Watching…';
+      resultEl.textContent = 'Collecting browser evidence on the selected tab…';
+      resultEl.className = 'result';
+    } else if (pending) {
       stateEl.textContent = '';
-      resultEl.textContent = 'SNITCHSHOT pending. Paste it before taking another SNITCH.';
+      resultEl.textContent = 'SNITCHSHOT ready. Copy it, then Ctrl+V anywhere.';
       resultEl.className = 'result';
     } else {
       stateEl.textContent = 'Ready';
@@ -35,9 +49,63 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  async function refreshStatus(fromPoll = false): Promise<void> {
+    const response = await send({ type: 'GET_STATUS' } satisfies SnitchMessage);
+    if (!response) return;
+
+    if (response.type === 'STATUS_RESULT') {
+      render(response.state);
+      if (response.state === 'observing') {
+        if (!observedPending) {
+          observedPending = true;
+          resultEl.textContent =
+            'Collecting browser evidence on the selected tab…';
+        }
+        schedulePoll();
+      } else if (response.state === 'snitchshot_pending') {
+        stopPoll();
+        if (observedPending) {
+          observedPending = false;
+          stateEl.textContent = 'Done ✓';
+          resultEl.textContent = 'Report ready. Press COPY SNITCHSHOT.';
+          resultEl.className = 'result ok';
+        }
+      } else if (fromPoll) {
+        // Returned to idle by the backend (e.g. session completed while we were
+        // polling) without a fresh user action.
+        stopPoll();
+        observedPending = false;
+      }
+    } else if (response.type === 'EVIDENCE_ERROR') {
+      stopPoll();
+      observedPending = false;
+      render('idle');
+      resultEl.textContent = response.error;
+      resultEl.className = 'result err';
+    }
+  }
+
+  function schedulePoll(): void {
+    if (pollTimer != null) return;
+    pollTimer = window.setInterval(() => void refreshStatus(true), STATUS_POLL_MS);
+  }
+
+  function stopPoll(): void {
+    if (pollTimer != null) {
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function showError(message: string): void {
+    stateEl.textContent = 'Error';
+    resultEl.textContent = message;
+    resultEl.className = 'result err';
+  }
+
   snitchBtn.addEventListener('click', async () => {
     snitchBtn.disabled = true;
-    stateEl.textContent = 'Capturing…';
+    stateEl.textContent = 'Starting…';
     resultEl.textContent = '';
     resultEl.className = 'result';
 
@@ -51,53 +119,83 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!response) throw new Error('No response from background');
 
       if (response.type === 'SNITCH_ERROR') {
-        throw new Error(response.error);
-      }
-
-      if (response.type === 'SNITCH_RESULT') {
-        stateEl.textContent = 'Snitched ✓';
-        resultEl.textContent =
-          'Report is ready. Focus an editable field, then paste it with PASTE SNITCHSHOT.';
-        resultEl.className = 'result ok';
+        showError(response.error);
         await refreshStatus();
+      } else if (response.type === 'SNITCH_ACCEPTED') {
+        observedPending = true;
+        await refreshStatus();
+      } else {
+        showError('Unexpected response from background.');
       }
     } catch (err) {
-      stateEl.textContent = 'Error';
-      resultEl.textContent = err instanceof Error ? err.message : 'Unknown error';
-      resultEl.className = 'result err';
+      showError(err instanceof Error ? err.message : 'Unknown error');
+      await refreshStatus();
     } finally {
       snitchBtn.disabled = false;
     }
   });
 
-  pasteBtn.addEventListener('click', async () => {
-    pasteBtn.disabled = true;
-    resultEl.textContent = 'Pasting into focused field…';
+  cancelBtn.addEventListener('click', async () => {
+    cancelBtn.disabled = true;
+    resultEl.textContent = 'Cancelling…';
     resultEl.className = 'result';
 
     try {
-      const response = (await chrome.runtime.sendMessage({
-        type: 'PASTE_SNITCHSHOT',
-      } satisfies SnitchMessage)) as SnitchMessage | undefined;
-
+      const response = await chrome.runtime.sendMessage({
+        type: 'CANCEL_SNITCH',
+      } satisfies SnitchMessage);
       if (!response) throw new Error('No response from background');
-
-      if (response.type === 'PASTE_SNITCHSHOT_RESULT' && response.pasted) {
-        resultEl.textContent = 'Pasted ✓';
-        resultEl.className = 'result ok';
-        await refreshStatus();
+      if (response.type === 'EVIDENCE_ERROR') {
+        showError(response.error);
       } else {
-        const error =
-          response.type === 'PASTE_SNITCHSHOT_RESULT' ? response.error : 'Paste failed';
-        throw new Error(error ?? 'Paste failed');
+        stopPoll();
+        observedPending = false;
+        render('idle');
       }
     } catch (err) {
-      resultEl.textContent = err instanceof Error ? err.message : 'Paste failed';
-      resultEl.className = 'result err';
-      // Buffer is retained; stay in paste mode so the user can retry.
-      await refreshStatus();
+      showError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
-      pasteBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+  });
+
+  copyBtn.addEventListener('click', async () => {
+    copyBtn.disabled = true;
+    resultEl.textContent = 'Copying to clipboard…';
+    resultEl.className = 'result';
+
+    try {
+      // The private buffer is authoritative; read it from the trusted backend.
+      const content = await send({ type: 'GET_SNITCHSHOT' } satisfies SnitchMessage);
+      if (!content) throw new Error('No response from background');
+      if (content.type !== 'SNITCHSHOT_CONTENT') {
+        const error =
+          content.type === 'EVIDENCE_ERROR' ? content.error : 'Failed to read SNITCHSHOT';
+        throw new Error(error ?? 'Failed to read SNITCHSHOT');
+      }
+
+      // Write to the ordinary OS clipboard from this focused, trusted document.
+      await writeToClipboard({ text: content.report });
+
+      // Only after the clipboard write succeeds does the private buffer clear.
+      const cleared = await send({
+        type: 'CLIPBOARD_RELEASED',
+      } satisfies SnitchMessage);
+      if (cleared?.type === 'EVIDENCE_ERROR') {
+        throw new Error(cleared.error);
+      }
+
+      stopPoll();
+      observedPending = false;
+      await refreshStatus();
+      stateEl.textContent = 'Copied ✓';
+      resultEl.textContent = 'Report on clipboard. Now press Ctrl+V anywhere.';
+      resultEl.className = 'result ok';
+    } catch (err) {
+      // Buffer is retained; stay in COPY so the user can retry.
+      showError(err instanceof Error ? err.message : 'Copy failed');
+    } finally {
+      copyBtn.disabled = false;
     }
   });
 
