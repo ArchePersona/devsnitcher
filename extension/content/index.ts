@@ -7,27 +7,10 @@ import {
 } from '../../devpeeper/observation';
 import type { Evidence, SnitchMessage } from '../../shared/types';
 
-const PAGE_SCRIPT_SRC = chrome.runtime.getURL('page-script.js');
 const CACHE_REFRESH_INTERVAL_MS = 2000;
 let cacheRefreshInFlight = false;
 let cachedTabId: number | undefined;
 
-function injectPageScript(): void {
-  try {
-    if (document.documentElement.querySelector('script[data-devsnitcher-page-script]')) return;
-
-    const script = document.createElement('script');
-    script.src = PAGE_SCRIPT_SRC;
-    script.dataset.devsnitcherPageScript = 'true';
-    script.onload = () => script.remove();
-    script.onerror = () => script.remove();
-    document.documentElement.prepend(script);
-  } catch {
-    // Injection can fail under strict CSP; silently ignore so we don't break the page.
-  }
-}
-
-injectPageScript();
 window.setTimeout(queueCacheRefresh, 250);
 window.setInterval(queueCacheRefresh, CACHE_REFRESH_INTERVAL_MS);
 

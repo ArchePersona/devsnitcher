@@ -97,8 +97,8 @@ async function main() {
   const hasPageScript = scripts.some((s) => typeof s === 'string' && s.includes('page-script'));
   console.log('   Page script injected:', hasPageScript);
 
-  if (!hasPageScript) {
-    console.error('   FAIL: Content script not injecting page-script.js');
+  if (hasPageScript) {
+    console.error('   FAIL: page-script.js should not be injected after DEVPEEPER-005');
     ws.close();
     process.exit(1);
   }

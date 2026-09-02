@@ -25,12 +25,6 @@
       "all_frames": false
     }
   ],
-  "web_accessible_resources": [
-    {
-      "resources": ["page-script.js"],
-      "matches": ["http://*/*", "https://*/*"]
-    }
-  ],
   "permissions": ["activeTab", "clipboardWrite", "debugger", "scripting", "tabs", "storage"],
   "host_permissions": ["http://*/*", "https://*/*"]
 }

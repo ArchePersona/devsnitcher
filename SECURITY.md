@@ -37,10 +37,10 @@ DEVSnitcher is designed around these constraints:
 - Per-tab cache records are cleared on tab close and navigation/load
 - Environment/DOM observations are acquired through `chrome.scripting.executeScript` and carried back in Chrome's `InjectionResult`, not through a page-authored message
 - Chromium observations are acquired through `chrome.debugger` attached to the active tab only, with browser-issued provenance; the `debugger` permission is required for this browser-observed path
-- Browser-observed console, runtime-error and network evidence comes only from the trusted Chromium observer bound to the active tab; page-authored `console`/`jsErrors`/`network` data is ignored
+- Browser-observed console, runtime-error and network evidence comes only from the trusted Chromium observer bound to the active tab; no page-authored value supplies authoritative evidence
 - Chromium identifiers are provenance, not durable source identity (no `SourceIdentity`, no per-navigation source rollover)
 
-The page-facing message bridge no longer carries any evidence category (network is now browser-observed); it is inert and scheduled for removal in DEVPEEPER-005. It is not a general command channel into the extension service worker.
+The legacy `window.postMessage` page-evidence bus has been removed. There is no page-facing message bridge carrying evidence, no MAIN-world evidence collector is injected, and DEVSnitcher posts no evidence protocol the page can participate in. It is not a general command channel into the extension service worker.
 
 ---
 
@@ -107,11 +107,9 @@ DEVSnitcher has three evidence sources with different authenticity properties:
 
 **Chrome-mediated bounded observations (browser-returned).** Environment, focused DOM and current selection are acquired through `chrome.scripting.executeScript` from extension-controlled code. Chrome returns the result to the extension inside an `InjectionResult`, so a hostile page calling `window.postMessage` cannot forge or substitute these bounded observations.
 
-For both browser-mediated paths, Chrome authenticates the transport path to the extension. This does **not** make the observed page state semantically truthful: the webpage can still influence the DOM, focus, selection, console output and lifecycle it exposes. Correlating page-reported data with a tab ID, URL, timestamp, document ID, script hash, or page message does **not** promote it to browser-observed provenance.
+For both browser-mediated paths, Chrome authenticates the transport path to the extension. This does **not** make the observed page state semantically truthful: the webpage can still influence the DOM, focus, selection, console output, network behavior and lifecycle it exposes. Correlating page-visible state with a tab ID, URL, timestamp, or document identity does **not** promote it to browser-observed provenance.
 
-**Legacy page-evidence ingress (page-reported).** The page-context `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` `window.postMessage` bridge is not browser-authenticated. After DEVPEEPER-004 it no longer carries any evidence category: console, runtime-error and network evidence are all browser-observed, and the content bridge no longer posts `COLLECT_EVIDENCE`. The bridge is inert and scheduled for removal in DEVPEEPER-005.
-
-After this milestone a hostile webpage **cannot** substitute console, runtime-error or network evidence by racing `window.postMessage({ type: 'EVIDENCE_RESULT', ... })`: page-authored `console`, `jsErrors` and `network` data are ignored, browser-observed console/runtime/network evidence comes only from the trusted Chromium observer bound to the active tab, events from another tab/debugger target are rejected, and stale observations from a detached/replaced attachment are not reused.
+There is no page-reported evidence ingress. The legacy `window.postMessage` `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` bus has been removed, DEVSnitcher injects no MAIN-world evidence collector, and no authoritative evidence originates from a page-authored message. A hostile page has no DEVSnitch evidence protocol it can participate in by emitting `window.postMessage`; browser-observed console/runtime/network evidence comes only from the trusted Chromium observer bound to the active tab, events from another tab/debugger target are rejected, and stale observations from a detached/replaced attachment are not reused.
 
 Therefore DEVSnitcher must not claim that Chrome-mediated observation makes page-controlled state truthful. Browser-observed provenance is provenance of observation, not truthfulness of the page's behavior.
 
@@ -121,7 +119,7 @@ This distinction matters:
 Privileged-action authorization: protected by popup-only background enforcement.
 Stored-cache confidentiality/integrity: protected by extension-owned AES-GCM encryption and validation.
 Browser-mediated transport authenticity: bounded probe return authenticated by Chrome's InjectionResult; Chromium console/runtime/network events via chrome.debugger (chrome-scripting / chrome-debugger).
-Legacy page-evidence ingress authenticity: no longer applicable — no evidence category uses the page-reporting bridge after DEVPEEPER-004; scheduled for removal in DEVPEEPER-005.
+Page-evidence ingress authenticity: not applicable — the page-reporting bus has been removed; no evidence originates from a page-authored message.
 ```
 
 ---
@@ -183,9 +181,9 @@ Please report issues such as:
 - Stale cache surviving navigation and being consumed for a different page
 - Forged or untrusted page evidence being accepted as trusted extension output
 - The debugger being attached beyond the active tab, or CDP driving privileged/execution behavior rather than passive observation
-- Page-reported evidence being mislabeled or promoted to browser-observed provenance by correlation
+- Page-visible state being mislabeled or promoted to browser-observed provenance by correlation
 - A Chromium observation associated with the wrong tab, or surviving after Chrome detaches the session
-- Page-authored console/runtime/network evidence racing `window.postMessage` to replace browser-observed console/runtime/network evidence
+- Page-authored `window.postMessage` traffic masquerading as a DEVSnitch evidence protocol (no such protocol exists)
 - Browser-observed console/runtime/network evidence from another tab, or stale evidence from a replaced/detached attachment, being reused
 - A network response body being fetched for anything other than a retained HTTP failure, or a retained network failure exceeding the 100-entry / 1000-character bounds
 

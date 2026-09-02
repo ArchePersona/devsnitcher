@@ -67,8 +67,6 @@ export interface ReportInput {
 export type ReportFormat = 'markdown' | 'json';
 
 export type SnitchMessage =
-  | { type: 'COLLECT_EVIDENCE' }
-  | { type: 'EVIDENCE_RESULT'; evidence: Evidence }
   | { type: 'EVIDENCE_ERROR'; error: string }
   | { type: 'CACHE_EVIDENCE'; evidence: Evidence }
   | { type: 'CACHE_STORED' }

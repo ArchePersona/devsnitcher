@@ -7,12 +7,12 @@ A browser extension that captures page evidence (console logs, failed network re
 ## Architecture
 
 ```
-collectors/       → Evidence collectors (chrome-agnostic, page-world logic)
+devpeeper/        → Browser-observed (Chromium/CDP) + bounded probe observation layer
 redaction/        → Sensitive data redaction (headers, cookies, tokens, URLs)
 report/           → Report builders (markdown, JSON) + clipboard writer
 extension/
-  content/        → Injected content script + page-script bridge
-  background/     → Service worker (coordinates, screenshot, report assembly)
+  content/        → Content script (bounded Chrome-mediated environment/DOM, cache refresh)
+  background/     → Service worker (Chromium observer, evidence assembly, cache, report)
   popup/          → SNITCH button UI
 ```
 
@@ -23,7 +23,7 @@ npm run build       # Bundle → dist/
 npm run dev         # Watch mode
 npm run typecheck   # TypeScript check
 npm run lint        # ESLint
-npm test            # Run automated tests (collectors, redaction, report, encrypted cache)
+npm test            # Run automated tests (bounded probe, Chromium observation, redaction, report, encrypted cache)
 ```
 
 ## Loading in Chrome

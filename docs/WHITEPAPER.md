@@ -218,25 +218,19 @@ Popup
 Background service worker
   └─ Finds active tab
   └─ Ensures content script is available
-  └─ Requests evidence
-  └─ Builds final report
+  └─ Attaches active-tab Chromium observer (Page, Runtime, Network)
+  └─ Observes console, runtime errors and failed network browser-observed
+  └─ Assembles and encrypts evidence; redacts; builds final report
 
 Content bridge
-  └─ Talks across the browser boundary
-  └─ Requests page evidence
-  └─ Returns evidence to background
+  └─ Runs in the isolated extension world
+  └─ Executes the Chrome-mediated bounded probe (environment/DOM/selection)
+  └─ Streams accepted evidence to the background
 
-Page script
-  └─ Runs in the page context
-  └─ Captures console, network, JS errors, DOM context
-
-Collectors
-  └─ Environment
-  └─ Console
-  └─ Network
-  └─ JavaScript
-  └─ DOM
-  └─ Screenshot
+DEVPEEPER
+  └─ Bounded probe (chrome-scripting): environment, DOM, selection
+  └─ Chromium observer (chrome-debugger): console, runtime errors, network
+  └─ Optional user-requested screenshot
 
 Redaction
   └─ Headers
@@ -253,17 +247,17 @@ Report
 ## Project Layout
 
 ```text
-collectors/       Evidence collectors
-redaction/        Pure redaction helpers
-report/           Markdown, JSON, and clipboard output
-shared/           Shared TypeScript types
-extension/        Browser extension source
-  background/     Service worker and evidence coordinator
-  content/        Content bridge and page script injection
-  popup/          SNITCH button UI
-scripts/          Build and test scripts
-tests/            Unit tests
-docs/             Additional project documentation
+devpeeper/         Evidence acquisition (bounded probe, Chromium observer, screenshots)
+redaction/         Pure redaction helpers
+report/            Markdown, JSON, and clipboard output
+shared/            Shared TypeScript types
+extension/         Browser extension source
+  background/      Service worker and evidence coordinator
+  content/         Content bridge (Chrome-mediated probe execution)
+  popup/           SNITCH button UI
+scripts/           Build and test scripts
+tests/             Unit tests
+docs/              Additional project documentation
 ```
 
 ## Design Rules

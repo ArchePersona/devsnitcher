@@ -56,7 +56,7 @@ For DEVPEEPER-003 browser-observed console + runtime errors, focused verificatio
 - `Runtime.exceptionThrown` normalizes without invented provenance and without synthesized `promise_rejection` classification
 - events from the wrong tab are rejected
 - console/error history is bounded (200 console, 50 errors) and cleared on detach
-- page-authored `EVIDENCE_RESULT.console` / `EVIDENCE_RESULT.jsErrors` cannot replace browser-observed values (background assembles console/jsErrors only from the active-tab Chromium session)
+- no page-authored `window.postMessage` value can supply console/jsErrors (background assembles console/jsErrors only from the active-tab Chromium session)
 - active-tab replacement does not mix buffered observations
 
 Keep this coverage proportional. Do not build a large mock framework solely to exercise browser APIs that are better proven manually.
@@ -159,8 +159,8 @@ Environment/DOM now comes from a Chrome-mediated bounded probe, not the page.
 
 1. Open the test page and generate DOM/focus evidence.
 2. Wait at least one rolling refresh interval so the probe repopulates the cache.
-3. From page JavaScript, attempt to post a forged `EVIDENCE_RESULT` claiming a different environment/title/DOM.
-4. Click **SNITCH** and confirm the report's environment/title/DOM match the real page (the Chrome probe) rather than the forged values.
+3. From page JavaScript, attempt to post a `window.postMessage` claiming a different environment/title/DOM; confirm there is no DEVSnitch `EVIDENCE_RESULT` protocol the page can publish through, and the value is ignored.
+4. Click **SNITCH** and confirm the report's environment/title/DOM match the real page (the Chrome probe) rather than any forged values.
 5. Confirm the bounded probe starts no listeners and the extension executes it through `chrome.scripting.executeScript` (visible in the background/content-script bundle).
 
 This proves the bounded return path is Chrome-authenticated, not page-authored.
@@ -188,7 +188,7 @@ This proof exercises the live debugger surface for console and runtime-error obs
 1. Load the extension and open a normal tab on `http://localhost:8088/test.html`; the background should attach the Chromium observer to the active tab on activation (no SNITCH needed), enabling `Page`, `Runtime` and `Network`.
 2. From the page, call `console.log('hello')`, `console.error('boom')`, and `throw new Error('uncaught')` (or trigger an unhandled rejection).
 3. Click **SNITCH** and confirm the report's Console section contains the browser-observed `hello`/`boom` entries and the JavaScript section contains the thrown error — and that these come from the active-tab Chromium session, not the page message.
-4. From page JavaScript, post a forged `EVIDENCE_RESULT` whose `console`/`jsErrors` claim different values, then click **SNITCH**; confirm the report still uses the browser-observed values and ignores the forged ones.
+4. From page JavaScript, attempt to post a `window.postMessage` whose `console`/`jsErrors` claim different values, then click **SNITCH**; confirm the report still uses the browser-observed values and no page-authored value is treated as evidence.
 5. Switch to or open another tab and confirm a fresh active-tab attachment with no carried-over console/error history from the prior tab.
 
 This proves browser-observed console/runtime evidence arrives through the active-tab Chromium session, is preserved with provenance, and cannot be replaced by raced page-authored messages.
@@ -202,7 +202,7 @@ This proof exercises the live debugger surface for the browser-observed network 
 1. Load the extension and open a normal tab on `http://localhost:8088/test.html`; the background should attach the Chromium observer to the active tab on activation (no SNITCH needed), enabling the `Network` domain.
 2. From the page, trigger a failing HTTP request (e.g. fetch a URL that returns `404`/`500`, and force a browser-level failure such as a connection-refused request) and confirm the report's Network section contains those failed requests with method, URL, status (or `0` for a browser-level failure), Chrome monotonic duration, and a bounded response preview.
 3. Confirm successful 2xx/3xx requests do **not** appear in the report.
-4. From page JavaScript, post a forged `EVIDENCE_RESULT` whose `network` claims a different set of failed requests, then click **SNITCH**; confirm the report still uses the browser-observed network entries and ignores the forged ones.
+4. From page JavaScript, attempt to post a `window.postMessage` whose `network` claims a different set of failed requests, then click **SNITCH**; confirm the report still uses the browser-observed network entries and no page-authored value is treated as evidence.
 5. Confirm the page-context network monkey-patch is gone: the background/content bundle no longer starts `startNetworkCollector`, and ordinary page `fetch`/`XHR` are no longer wrapped (inspect the content-script/background bundle).
 6. Switch to or open another tab and confirm a fresh active-tab attachment with no carried-over network history from the prior tab.
 
@@ -240,7 +240,7 @@ Do **not** use successful encrypted-cache or SNITCH-boundary tests as proof that
 
 Environment, focused DOM and current selection are browser-mediated: acquired through `chrome.scripting.executeScript` and returned in Chrome's `InjectionResult`, so a page calling `window.postMessage` cannot forge those bounded observations. Chrome authenticates the transport path; it does not make the underlying page-controlled DOM/focus state truthful.
 
-Console, runtime-error and network evidence all travel browser-observed through the active-tab Chromium session; the page-facing `window.postMessage` `COLLECT_EVIDENCE`/`EVIDENCE_RESULT` bridge no longer carries any evidence category. A hostile page script can no longer fabricate console, network or error evidence, because the content bridge ignores page-authored `console`/`jsErrors`/`network` and that bridge is inert after DEVPEEPER-004 (scheduled for removal in DEVPEEPER-005).
+Console, runtime-error and network evidence all travel browser-observed through the active-tab Chromium session; there is no page-facing `window.postMessage` `COLLECT_EVIDENCE`/`EVIDENCE_RESULT` evidence bus. A hostile page script cannot fabricate console, network or error evidence, because DEVSnitcher injects no MAIN-world collector and no authoritative evidence originates from a page-authored message.
 
 The encrypted cache begins protecting evidence only after that acceptance point.
 

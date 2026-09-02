@@ -8,7 +8,6 @@ const distDir = join(root, 'dist');
 const watch = process.argv.includes('--watch');
 
 const classicEntries = {
-  'page-script': join(root, 'extension', 'content', 'page-script.ts'),
   'content': join(root, 'extension', 'content', 'index.ts'),
 };
 

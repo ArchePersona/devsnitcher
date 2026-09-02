@@ -1,4 +1,4 @@
-import { test, describe, beforeEach } from 'node:test';
+import { test, describe } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 
@@ -60,10 +60,6 @@ setGlobal(
 );
 
 // Now import collectors and report modules
-import { collectEnvironment } from '../collectors/environment';
-import { startConsoleCollector, collectConsole, resetConsole } from '../collectors/console';
-import { startJavaScriptCollector, collectJavaScript, resetJavaScript } from '../collectors/javascript';
-import { collectDom } from '../collectors/dom';
 import { captureScreenshot } from '../collectors/screenshot';
 import { redactEvidence, redactCookieString } from '../redaction/index';
 import { buildMarkdownReport } from '../report/markdown';
@@ -86,152 +82,6 @@ import { normalizeConsoleApi, normalizeExceptionThrown } from '../devpeeper/runt
 import type { Evidence } from '../shared/types';
 
 describe('DEVSnitcher collectors', () => {
-  beforeEach(() => {
-    resetConsole();
-    resetJavaScript();
-    window.document.body.innerHTML = '';
-  });
-
-  describe('environment', () => {
-    test('captures URL, title, browser, platform, viewport, timestamp', () => {
-      const env = collectEnvironment();
-      assert.equal(env.url, 'https://example.com/test-page');
-      assert.equal(env.title, 'TestPage');
-      assert.ok(env.browser.length > 0);
-      assert.ok(typeof env.platform === 'string');
-      assert.ok(env.viewport.width > 0);
-      assert.ok(env.viewport.height > 0);
-      assert.ok(env.timestamp > 0);
-    });
-  });
-
-  describe('console collector', () => {
-    test('captures console.error and console.warn with stack', () => {
-      startConsoleCollector();
-      console.error('Test error: { "db": "prod" }');
-      console.warn('Test warning');
-      const entries = collectConsole();
-      assert.equal(entries.length, 2);
-      assert.equal(entries[0].level, 'error');
-      assert.equal(entries[0].message, 'Test error: { "db": "prod" }');
-      assert.ok(entries[0].stack);
-      assert.equal(entries[1].level, 'warn');
-      assert.ok(entries[1].stack);
-    });
-
-    test('captures console.log with object args', () => {
-      startConsoleCollector();
-      console.log('Status:', { code: 500, message: 'boom' });
-      const entries = collectConsole();
-      assert.equal(entries.length, 1);
-      assert.equal(entries[0].level, 'log');
-      assert.ok(entries[0].message.includes('Status:'));
-      assert.ok(entries[0].message.includes('500'));
-    });
-  });
-
-  describe('javascript collector', () => {
-    test('captures unhandled exceptions', () => {
-      startJavaScriptCollector();
-      const err = new Error('DEVSnitcher test: unhandled exception');
-      err.stack = 'Error: DEVSnitcher test: unhandled exception\n    at test (page.js:10:5)';
-      const ev = new ErrorEvent('error', {
-        message: 'DEVSnitcher test: unhandled exception',
-        filename: 'page.js',
-        lineno: 10,
-        colno: 5,
-        error: err,
-      });
-      window.dispatchEvent(ev);
-      const entries = collectJavaScript();
-      assert.equal(entries.length, 1);
-      assert.equal(entries[0].type, 'unhandled_exception');
-      assert.equal(entries[0].message, 'DEVSnitcher test: unhandled exception');
-      assert.equal(entries[0].filename, 'page.js');
-      assert.equal(entries[0].lineno, 10);
-    });
-
-    test('captures unhandled promise rejections', () => {
-      startJavaScriptCollector();
-      const p = Promise.reject(new Error('DEVSnitcher test: unhandled promise rejection'));
-      p.catch(() => {});
-      const ev = new PromiseRejectionEvent('unhandledrejection', {
-        promise: p,
-        reason: new Error('DEVSnitcher test: unhandled promise rejection'),
-      });
-      window.dispatchEvent(ev);
-      const entries = collectJavaScript();
-      assert.equal(entries.length, 1);
-      assert.equal(entries[0].type, 'promise_rejection');
-      assert.ok(entries[0].message.includes('unhandled promise rejection'));
-    });
-  });
-
-  describe('dom collector', () => {
-    test('captures selected element with selector, html, classes', () => {
-      const div = window.document.createElement('div');
-      div.id = 'test-el';
-      div.className = 'container active';
-      div.innerHTML = '<span>Hello</span>';
-      window.document.body.appendChild(div);
-
-      const ctx = collectDom(div);
-      assert.ok(ctx);
-      assert.equal(ctx!.selector, '#test-el');
-      assert.equal(ctx!.tagName, 'div');
-      assert.equal(ctx!.className, 'container active');
-      assert.equal(ctx!.isFocused, false);
-    });
-
-    test('falls back to active element when no selection provided', () => {
-      // When no element is selected, collectDom falls back to document.activeElement
-      const ctx = collectDom(null);
-      assert.ok(ctx);
-      assert.ok(ctx!.selector.length > 0);
-    });
-
-    test('builds unique selectors for siblings under an ID ancestor', () => {
-      const container = window.document.createElement('div');
-      container.id = 'menu';
-      const a = window.document.createElement('div');
-      const b = window.document.createElement('div');
-      const c = window.document.createElement('div');
-      a.className = 'item';
-      b.className = 'item';
-      c.className = 'item';
-      container.appendChild(a);
-      container.appendChild(b);
-      container.appendChild(c);
-      window.document.body.appendChild(container);
-
-      const sa = collectDom(a)!.selector;
-      const sb = collectDom(b)!.selector;
-      const sc = collectDom(c)!.selector;
-      assert.equal(sa, '#menu > div:nth-of-type(1)');
-      assert.equal(sb, '#menu > div:nth-of-type(2)');
-      assert.equal(sc, '#menu > div:nth-of-type(3)');
-      assert.notEqual(sa, sb);
-      assert.notEqual(sb, sc);
-    });
-
-    test('builds unique selectors for nested elements of the same tag', () => {
-      const outer = window.document.createElement('section');
-      const inner = window.document.createElement('div');
-      const p1 = window.document.createElement('p');
-      const p2 = window.document.createElement('p');
-      inner.appendChild(p1);
-      inner.appendChild(p2);
-      outer.appendChild(inner);
-      window.document.body.appendChild(outer);
-
-      const s1 = collectDom(p1)!.selector;
-      const s2 = collectDom(p2)!.selector;
-      assert.ok(s1.includes('p:nth-of-type(1)'));
-      assert.ok(s2.includes('p:nth-of-type(2)'));
-      assert.notEqual(s1, s2);
-    });
-  });
-
   describe('screenshot', () => {
     test('returns data URL from chrome.tabs.captureVisibleTab', async () => {
       const result = await captureScreenshot();
@@ -250,7 +100,14 @@ describe('DEVSnitcher collectors', () => {
 
 describe('redaction', () => {
   const evidence: Evidence = {
-    environment: collectEnvironment(),
+    environment: {
+      url: 'https://example.com',
+      title: 'Test',
+      browser: 'Chrome',
+      platform: 'Win32',
+      viewport: { width: 1280, height: 720 },
+      timestamp: 0,
+    },
     console: [
       { level: 'error', message: 'Auth failed: password=secret123 token=bearer_abc', timestamp: 100 },
     ],
@@ -314,7 +171,14 @@ describe('redaction', () => {
 
   test('does not redact non-sensitive data', () => {
     const safe: Evidence = {
-      environment: collectEnvironment(),
+      environment: {
+      url: 'https://example.com',
+      title: 'Test',
+      browser: 'Chrome',
+      platform: 'Win32',
+      viewport: { width: 1280, height: 720 },
+      timestamp: 0,
+    },
       console: [{ level: 'log', message: 'User clicked button', timestamp: 100 }],
       network: [
         {
@@ -390,25 +254,16 @@ describe('redaction', () => {
 
 describe('report builder', () => {
   test('markdown report has all required sections and redaction', () => {
-    startConsoleCollector();
-    startJavaScriptCollector();
-    console.error('DEVSnitcher test: console error');
-
-    const err = new Error('DEVSnitcher test: unhandled exception');
-    err.stack = 'Error: DEVSnitcher test: unhandled exception\n    at test (page.js:10:5)';
-    window.dispatchEvent(
-      new ErrorEvent('error', {
-        message: 'DEVSnitcher test: unhandled exception',
-        filename: 'page.js',
-        lineno: 10,
-        colno: 5,
-        error: err,
-      }),
-    );
-
     const evidence: Evidence = {
-      environment: collectEnvironment(),
-      console: collectConsole(),
+      environment: {
+        url: 'https://example.com/test-page',
+        title: 'Test',
+        browser: 'Chrome',
+        platform: 'Win32',
+        viewport: { width: 1280, height: 720 },
+        timestamp: 0,
+      },
+      console: [{ level: 'error', message: 'DEVSnitcher test: console error', timestamp: 100 }],
       network: [
         {
           url: 'https://api.example.com/missing',
@@ -419,7 +274,13 @@ describe('report builder', () => {
           requestHeaders: { Authorization: 'Bearer abc123' },
         },
       ],
-      jsErrors: collectJavaScript(),
+      jsErrors: [
+        {
+          type: 'unhandled_exception',
+          message: 'DEVSnitcher test: unhandled exception',
+          stack: '',
+        },
+      ],
       dom: {
         selector: '#test',
         html: '<div>Test</div>',
@@ -460,7 +321,14 @@ describe('report builder', () => {
 
   test('JSON report has correct schema and structure', () => {
     const evidence: Evidence = {
-      environment: collectEnvironment(),
+      environment: {
+        url: 'https://example.com',
+        title: 'Test',
+        browser: 'Chrome',
+        platform: 'Win32',
+        viewport: { width: 1280, height: 720 },
+        timestamp: 0,
+      },
       console: [{ level: 'error', message: 'fail', timestamp: 100 }],
       network: [
         {

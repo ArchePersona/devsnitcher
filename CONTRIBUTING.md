@@ -142,7 +142,7 @@ Keep code simple and direct.
 Avoid large all-purpose files. Prefer focused modules:
 
 ```text
-collectors/
+devpeeper/
 redaction/
 report/
 extension/background/

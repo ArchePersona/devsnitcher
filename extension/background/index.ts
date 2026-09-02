@@ -129,8 +129,8 @@ chrome.runtime.onMessage.addListener(
         const evidence = await getCachedEvidenceOrRefresh(tab.id!, tab.url!);
 
         // Console, runtime-error and network evidence are browser-observed from
-        // the active-tab Chromium session. Page-authored EVIDENCE_RESULT.console /
-        // EVIDENCE_RESULT.jsErrors / EVIDENCE_RESULT.network are never trusted here.
+        // the active-tab Chromium session only. The legacy page-reported
+        // evidence bus has been removed; no page-authored value is trusted here.
         const observed = await currentBrowserObservedEvidence(tab.id!);
         evidence.console = observed.console;
         evidence.jsErrors = observed.jsErrors;

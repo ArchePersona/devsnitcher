@@ -21,9 +21,10 @@ Future Chromium-native observation work should land behind this boundary rather 
 
 DEVPEEPER keeps acquisition mechanisms distinct by assurance level:
 
-1. **Browser-observed** — `chrome-debugger`: Chromium/CDP instrumentation → extension/DEVPEEPER. Now covers console, runtime errors and network.
+1. **Browser-observed** — `chrome-debugger`: Chromium/CDP instrumentation → extension/DEVPEEPER. Covers console, runtime errors and network.
 2. **Browser-returned** — `chrome-scripting`: `chrome.scripting.executeScript` → Chrome `InjectionResult`. Covers environment/DOM/selection.
-3. **Page-reported** — MAIN-world hook → page-mediated transport. No longer contributes any evidence category; the page bridge is scheduled for removal in DEVPEEPER-005.
+
+There is no page-reported mechanism. The legacy `window.postMessage` evidence bus and MAIN-world evidence collector have been removed; DEVSnitcher no longer injects a page-world collector and `page-script.js` is no longer built or exposed.
 
 Correlating a page-reported value with a tab ID, URL, timestamp, document ID, script hash, or page message does **not** make it browser-observed. Browser-native provenance belongs only to data actually obtained through Chrome-controlled instrumentation or Chrome-controlled result transport.
 
@@ -47,7 +48,7 @@ The active tab is followed continuously (`chrome.tabs.onActivated`) so observati
 - **Browser-returned**: environment; focused DOM; selection.
 - **Page-reported / legacy**: none.
 
-At SNITCH time the background assembles the active-tab Chromium session's browser-observed console/runtime/network evidence into the trusted evidence path (→ encrypted cache → redaction → report). Page-authored `EVIDENCE_RESULT.console` / `EVIDENCE_RESULT.jsErrors` / `EVIDENCE_RESULT.network` are not trusted for those fields. Chromium provenance describes observation, not the semantic truthfulness of what the page did.
+At SNITCH time the background assembles the active-tab Chromium session's browser-observed console/runtime/network evidence into the trusted evidence path (→ encrypted cache → redaction → report). No authoritative evidence originates from a page-authored message. Chromium provenance describes observation, not the semantic truthfulness of what the page did.
 
 Console and runtime-error normalization is bounded and deterministic: it reads only browser-supplied fields (`value`, `unserializableValue`, `description`, `subtype`/`type`) and never executes page JavaScript or calls `Runtime.getProperties` to reconstruct formatting. `Runtime.exceptionThrown` does not expose a reliable promise-rejection flag, so the observer emits the honest `unhandled_exception` classification and does not synthesize `promise_rejection`.
 
