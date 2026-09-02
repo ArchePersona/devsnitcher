@@ -292,7 +292,7 @@ The architecture should not add:
 - Vendor-specific AI flows
 - Large application frameworks
 
-Those may be separate products later. They do not belong in the core v0.x extension.
+Those may be separate products later. They do not belong in the core v2.x extension.
 
 ---
 
@@ -316,7 +316,7 @@ Those may be separate products later. They do not belong in the core v0.x extens
 
 DEVSnitcher is intentionally standalone.
 
-It may later export into SHERLOCK-style evidence workflows, but v0.1.x has no backend, no SHERLOCK dependency, and no external upload path.
+It may later export into SHERLOCK-style evidence workflows, but v2.x has no backend, no SHERLOCK dependency, and no external upload path.
 
 DEVSnitcher captures browser debugging evidence locally.
 

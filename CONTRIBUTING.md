@@ -41,7 +41,7 @@ Good areas for contribution include:
 
 ---
 
-## Contributions to avoid during v0.x
+## Contributions to avoid during v2.x
 
 Please avoid changes that turn DEVSnitcher into a large platform before the core extension is mature.
 

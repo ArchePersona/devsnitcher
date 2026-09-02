@@ -4,7 +4,7 @@ DEVSnitcher is local-first.
 
 The extension captures browser evidence, maintains an encrypted browser-session cache, formats user-requested evidence into a report, and gives that report to the user through the clipboard.
 
-There is no DEVSnitcher cloud service in the v0.x extension.
+There is no DEVSnitcher cloud service in the 2.x extension.
 
 ---
 

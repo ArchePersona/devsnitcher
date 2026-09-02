@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DEVSnitcher",
-  "version": "0.1.1",
+  "version": "2.0.0",
   "description": "Press SNITCH. Paste into AI. Captures browser evidence into an AI-ready report.",
   "icons": {
     "16": "icons/icon-16.png",

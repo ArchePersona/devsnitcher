@@ -59,6 +59,14 @@ DEVSnitcher can collect:
 - an optional screenshot marker
 - summary counts
 
+Evidence comes straight from the browser on the active tab:
+
+- **Browser-observed** (Chromium/CDP, through `chrome.debugger`) — console warnings/errors, runtime JavaScript failures, and failed network requests carry browser-issued provenance.
+- **Browser-returned** (bounded `chrome.scripting` probe) — environment, DOM context, and selection are returned by Chrome inside its own `InjectionResult`.
+- **Optional screenshot** — captured only when you request it on SNITCH.
+
+DEVSnitcher works only on the tab you are looking at. It reports where an observation came from (browser vs. page), and provenance of that kind describes the acquisition path — not a claim that the page's behavior is truthful.
+
 ## What it does not do
 
 DEVSnitcher is not an AI agent.

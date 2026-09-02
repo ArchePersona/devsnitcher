@@ -275,13 +275,13 @@ docs/              Additional project documentation
 
 ## Release State
 
-DEVSnitcher v0.1.1 is a working local extension build.
+DEVSnitcher v2.0.0 is a working local extension build.
 
 Validated:
 
 - TypeScript compile: passing
 - ESLint: passing
-- Tests: 24/24 passing
+- Tests: passing
 - Build: passing
 - Manual browser proof: Chrome/Chromium flow validated on localhost
 - Microsoft Edge compatibility: validated through Chromium extension flow
@@ -289,7 +289,7 @@ Validated:
 Current locked release:
 
 ```text
-devsnitcher-v0.1.1-target-icon
+devsnitcher-v2.0.0
 ```
 
 Release checkpoints:
@@ -298,6 +298,7 @@ Release checkpoints:
 devsnitcher-v0.1-snitch-button
 devsnitcher-v0.1-browser-proof
 devsnitcher-v0.1.1-target-icon
+devsnitcher-v2.0.0
 ```
 
 ## Icon
@@ -320,7 +321,7 @@ The project should remain small, inspectable, and useful without vendor lock-in.
 
 ## Future Ideas
 
-These are intentionally outside v0.1.x:
+These are intentionally outside v2.x:
 
 - Firefox support
 - GitHub issue export

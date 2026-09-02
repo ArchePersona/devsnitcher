@@ -8,11 +8,11 @@ The project is designed to be local-first and transparent, but users should stil
 
 ## Supported versions
 
-During the early v0.x phase, security fixes will target the latest version on the `main` branch.
+During the 2.x phase, security fixes will target the latest version on the `main` branch.
 
 | Version | Supported |
 |---|---|
-| 0.1.x | Yes |
+| 2.x | Yes |
 | older tags | No |
 
 ---

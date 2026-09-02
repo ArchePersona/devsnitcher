@@ -2,7 +2,31 @@
 
 All notable changes to DEVSnitcher will be documented here.
 
-This project is currently in early v0.x development.
+---
+
+## 2.0.0 — Browser-Observed Evidence
+
+### Changed
+
+- Replaced the page-authored evidence flow with browser-mediated observation on the active tab.
+- Console, runtime errors and failed network requests are now browser-observed via a Chromium/CDP observer (`chrome.debugger`) enabled on the active tab only (`Page`, `Runtime`, `Network` domains), with browser-issued provenance preserved.
+- Environment, focused DOM and current selection are now browser-returned through a bounded `chrome.scripting.executeScript` probe; Chrome returns the result in its own `InjectionResult`.
+- Removed the legacy `window.postMessage` `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` page-evidence bus, the MAIN-world evidence collector, and the page-context network monkey-patch. No authoritative evidence originates from a page-authored message.
+- Active-tab scope is deliberate: the observer follows the currently active supported tab and never monitors whole-browser targets.
+- Network retention is bounded and failure-focused: only HTTP status `>= 400` or browser-reported failures (status `0`) are kept, response bodies fetched only for retained HTTP failures and truncated to 1000 characters, bounded at 100 entries per active-tab session.
+
+### Documentation
+
+- Updated README, architecture, privacy, testing, and security documentation to describe the 2.0 browser-observed evidence model and trust boundaries.
+- Aligned the documentation with the v2.0.0 release line.
+
+### Locked release
+
+```text
+devsnitcher-v2.0.0
+```
+
+Press SNITCH. Paste into AI.
 
 ---
 
