@@ -67,13 +67,17 @@ The page does not receive the cache key or decrypted cache contents. Malformed c
 
 ### Page-evidence authenticity
 
-DEVPEEPER has two distinct evidence-producing paths, with different authenticity properties.
+DEVPEEPER has three distinct evidence sources, with different authenticity properties.
 
-**Browser-mediated bounded observations.** Environment, focused DOM and current selection are acquired through `chrome.scripting.executeScript` from extension-controlled code. Chrome returns the result directly to the extension in an `InjectionResult`; the page does not send these values over `window.postMessage`. A hostile page calling `window.postMessage` cannot substitute these bounded observations.
+**Browser-observed (Chromium/CDP instrumentation).** Chromium-issued events are received through `chrome.debugger` and associated with the active-tab attachment. Acquisition mechanism: `chrome-debugger`. These carry browser-issued provenance (`tabId`, `frameId`, `loaderId`, etc.) obtained only through Chrome-controlled instrumentation.
 
-Chrome authenticates this execution/return transport path to the extension. It does **not** make the observed page state semantically truthful — the webpage can still influence the DOM, focus and selection it exposes to the probe. This is a transport-path authenticity property, not a claim that MAIN-world data is inherently trustworthy.
+**Browser-returned (Chrome-mediated bounded observations).** Environment, focused DOM and current selection are acquired through `chrome.scripting.executeScript` from extension-controlled code. Chrome returns the result directly to the extension in an `InjectionResult`; the page does not send these values over `window.postMessage`. A hostile page calling `window.postMessage` cannot substitute these bounded observations. Acquisition mechanism: `chrome-scripting`.
 
-**Legacy page-evidence ingress.** Console, network and JavaScript-error collection still uses the page-context `window.postMessage` `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` bridge. Encryption begins only after the extension accepts that evidence, so the encrypted cache protects accepted evidence at rest; it does **not** cryptographically prove the original page-context console/network/error producer was genuine.
+For both browser-mediated paths, Chrome authenticates the execution/return/instrumentation transport path to the extension. It does **not** make the observed page state semantically truthful — the webpage can still influence the DOM, focus, selection and lifecycle it exposes. This is a transport-path authenticity property, not a claim that MAIN-world data is inherently trustworthy.
+
+**Page-reported (legacy ingress).** Console, network and JavaScript-error collection still uses the page-context `window.postMessage` `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` bridge. This ingress is not browser-authenticated and is not labeled `chrome-debugger` or `chrome-scripting`. Correlating a page-reported value with tab ID, URL, timestamp, or document identity does **not** promote it to browser-observed evidence.
+
+Encryption begins only after the extension accepts that evidence, so the encrypted cache protects accepted evidence at rest; it does **not** cryptographically prove the original page-context console/network/error producer was genuine.
 
 The greenfield console/network/error migration is not yet complete: that ingress remains unresolved and is handled in later DEVPEEPER milestones.
 
@@ -114,6 +118,8 @@ Responsibilities:
 - Encrypt accepted evidence with AES-256-GCM before storage
 - Decrypt and validate valid tab-bound cache records for SNITCH
 - Remove per-tab cache records when tabs close or navigate/load a new page
+- Own the DEVPEEPER Chromium/CDP observer and attach it to the active tab (best-effort, isolated from SNITCH)
+- Stop the Chromium observer when its tab closes
 - Capture screenshot evidence when explicitly requested by SNITCH
 - Apply redaction
 - Build the report payload
@@ -131,7 +137,12 @@ It runs extension-controlled code that observes the browser and page through bro
 
 Current DEVPEEPER paths:
 
-- **Chrome-mediated bounded probe** — executes a small self-contained probe in the tab's isolated world through `chrome.scripting.executeScript`. Chrome returns the result in an `InjectionResult` carrying browser-issued provenance (`tabId`, `frameId`, `documentId`). The probe reads environment, focused DOM context and current selection, starts no listeners, and never uses `window.postMessage`.
+- **Chrome-mediated bounded probe** — executes a small self-contained probe in the tab's isolated world through `chrome.scripting.executeScript`. Chrome returns the result in an `InjectionResult` carrying browser-issued provenance (`tabId`, `frameId`, `documentId`). The probe reads environment, focused DOM context and current selection, starts no listeners, and never uses `window.postMessage`. Acquisition mechanism: `chrome-scripting` (browser-returned).
+- **Chromium observation foundation** — attaches a Chromium/CDP observer to the currently active tab through `chrome.debugger`, enables only the minimal `Page` domain needed to establish the observation transport, and normalizes browser-issued events (e.g. `Page.frameNavigated`) into DEVPEEPER observations with preserved provenance. Acquisition mechanism: `chrome-debugger` (browser-observed). Active-tab scope is deliberate: it does not monitor whole-browser or attach to every target, frame, worker, or background process.
+
+The `debugger` permission is intentionally required for browser-observed provenance: DEVPEEPER uses Chromium instrumentation so observation authority comes from the browser boundary rather than page-authored JavaScript messages.
+
+Chromium identifiers are provenance, not durable source identity. DEVPEEPER does not implement a `SourceIdentity` object and does not create per-navigation source rollover; the active-tab attachment is the effective observation source for this milestone. Console/network/error data is **not** yet migrated into these events.
 
 Future DEVPEEPER milestones will migrate console, runtime errors and network observation to Chromium-issued events. Those migrations are not present in this milestone.
 
@@ -280,9 +291,11 @@ DEVSnitcher should request only the permissions needed to capture and protect ev
 Current intended scope includes:
 
 ```json
-"permissions": ["activeTab", "scripting", "clipboardWrite", "tabs", "storage"],
+"permissions": ["activeTab", "clipboardWrite", "debugger", "scripting", "tabs", "storage"],
 "host_permissions": ["http://*/*", "https://*/*"]
 ```
+
+The `debugger` permission exists intentionally for browser-observed provenance: DEVPEEPER uses Chromium/CDP instrumentation (`chrome.debugger`) so observation authority comes from the browser boundary rather than page-authored JavaScript messages. It attaches only to the active tab and enables only the minimal `Page` domain. No unrelated permission was added.
 
 Browser-internal pages such as `chrome://`, `edge://`, and `chrome-extension://` should not be inspected.
 

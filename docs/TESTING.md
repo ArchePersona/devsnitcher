@@ -39,6 +39,15 @@ For the DEVPEEPER Chrome-mediated bounded observation, focused verification shou
 - the observation envelope separates payload, acquisition mechanism and browser provenance
 - absent browser identities (e.g. `documentId`) are not invented
 
+For the DEVPEEPER Chromium observation foundation, focused verification should establish at minimum:
+
+- the observer lifecycle (not running before start, running after start, stopped after stop)
+- attachment targets only the bound active tab and enables only the minimal `Page` domain
+- instrumentation is accepted only for the active attachment tab, not other tabs
+- browser-issued provenance (`tabId`, `frameId`, `loaderId`, `timestamp`) is preserved, and unrelated CDP methods are not elevated to observations
+- Chrome-initiated detach stops the observer and clears stale observations
+- a detach error does not break the caller
+
 Keep this coverage proportional. Do not build a large mock framework solely to exercise browser APIs that are better proven manually.
 
 ---
@@ -144,6 +153,20 @@ Environment/DOM now comes from a Chrome-mediated bounded probe, not the page.
 5. Confirm the bounded probe starts no listeners and the extension executes it through `chrome.scripting.executeScript` (visible in the background/content-script bundle).
 
 This proves the bounded return path is Chrome-authenticated, not page-authored.
+
+---
+
+## DEVPEEPER Chromium observation foundation proof
+
+This milestone establishes the active-tab Chromium/CDP attachment lifecycle. Because automated tests cannot drive a live `chrome.debugger` session in the repo test environment, they verify the lifecycle/provenance boundary against a narrow mocked transport; this manual proof exercises the real debugger surface.
+
+1. Load the extension, open a normal tab on `http://localhost:8088/test.html`, and click **SNITCH** once so the background attaches the Chromium observer to the active tab.
+2. Confirm the extension requests the `debugger` permission and attaches only to the active tab (inspect `chrome://extensions`, open the service worker, and observe `chrome.debugger.onEvent` registration / `Page.enable`).
+3. Reload or navigate the tab and confirm the DEVPEEPER observer receives a `Page.frameNavigated` event and preserves browser provenance (`tabId`, `frameId`, `loaderId`).
+4. Open Chrome DevTools for the attached tab (or close the tab) and confirm the observer reports not running after Chrome detaches it, with no stale observations presented as live.
+5. Confirm attachment is active-tab only: other tabs/targets are not enumerated or attached.
+
+This proves attachment, Chrome delivering instrumentation to the extension, DEVPEEPER associating it with the active-tab attachment, and provenance preservation. It is infrastructure proof only; console/network/error migration is not part of this milestone.
 
 ---
 

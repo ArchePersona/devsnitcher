@@ -81,6 +81,8 @@ import {
   normalizeBoundedSnapshot,
   type InjectionResultLike,
 } from '../devpeeper/observation';
+import { ChromiumObserver } from '../devpeeper/chromium';
+import type { DebuggerTarget, DebuggerTransport } from '../devpeeper/debugger-transport';
 import type { Evidence, NetworkEntry } from '../shared/types';
 
 describe('DEVSnitcher collectors', () => {
@@ -755,5 +757,185 @@ describe('DEVPEEPER Chrome-mediated bounded observation', () => {
     assert.equal(observation.provenance.frameId, 0);
     assert.equal(observation.provenance.documentId, undefined);
     assert.equal(observation.provenance.worldId, undefined);
+  });
+});
+
+describe('DEVPEEPER Chromium observation foundation', () => {
+  interface MockTransport extends DebuggerTransport {
+    attachCalls: Array<{ target: DebuggerTarget; version: string }>;
+    detachCalls: Array<DebuggerTarget>;
+    commands: Array<{ method: string; params?: unknown }>;
+    emitEvent(target: DebuggerTarget, method: string, params?: unknown): void;
+    emitDetach(target: DebuggerTarget, reason: string): void;
+  }
+
+  function makeTransport(): MockTransport {
+    const eventListeners: Array<
+      (target: DebuggerTarget, method: string, params?: unknown) => void
+    > = [];
+    const detachListeners: Array<(target: DebuggerTarget, reason: string) => void> = [];
+
+    const transport: MockTransport = {
+      attachCalls: [],
+      detachCalls: [],
+      commands: [],
+      attach: async (target, version) => {
+        transport.attachCalls.push({ target, version });
+      },
+      detach: async (target) => {
+        transport.detachCalls.push(target);
+      },
+      sendCommand: async (_target, method, params) => {
+        transport.commands.push({ method, params });
+        return {};
+      },
+      onEvent(listener) {
+        eventListeners.push(listener);
+        return () => {
+          const i = eventListeners.indexOf(listener);
+          if (i >= 0) eventListeners.splice(i, 1);
+        };
+      },
+      onDetach(listener) {
+        detachListeners.push(listener);
+        return () => {
+          const i = detachListeners.indexOf(listener);
+          if (i >= 0) detachListeners.splice(i, 1);
+        };
+      },
+      emitEvent(target, method, params) {
+        for (const l of [...eventListeners]) l(target, method, params);
+      },
+      emitDetach(target, reason) {
+        for (const l of [...detachListeners]) l(target, reason);
+      },
+    };
+
+    return transport;
+  }
+
+  test('lifecycle: not running until start, running after start, stopped after stop', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(5, transport);
+
+    assert.equal(observer.isRunning(), false);
+    await observer.start();
+    assert.equal(observer.isRunning(), true);
+    await observer.stop();
+    assert.equal(observer.isRunning(), false);
+  });
+
+  test('start attaches to the bound tab and enables only the minimal Page domain', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(9, transport);
+
+    await observer.start();
+
+    assert.equal(transport.attachCalls.length, 1);
+    assert.deepEqual(transport.attachCalls[0].target, { tabId: 9 });
+    assert.ok(transport.attachCalls[0].version.length > 0);
+
+    assert.deepEqual(
+      transport.commands.map((c) => c.method),
+      ['Page.enable'],
+    );
+  });
+
+  test('accepts instrumentation only for the active attachment tab', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(3, transport);
+    await observer.start();
+
+    // Event for a different tab is ignored.
+    transport.emitEvent({ tabId: 99 }, 'Page.frameNavigated', {
+      frame: { id: 0, loaderId: 'other-loader' },
+    });
+    assert.equal(observer.drain().length, 0);
+
+    transport.emitEvent({ tabId: 3 }, 'Page.frameNavigated', {
+      frame: { id: 0, loaderId: 'loader-1' },
+      timestamp: 1700000000000,
+    });
+    const buffered = observer.drain();
+    assert.equal(buffered.length, 1);
+    assert.equal(buffered[0].provenance.tabId, 3);
+  });
+
+  test('preserves browser provenance on a browser-observed observation', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(7, transport);
+    await observer.start();
+
+    transport.emitEvent({ tabId: 7 }, 'Page.frameNavigated', {
+      frame: { id: 11, loaderId: 'loader-abc' },
+      timestamp: 1700000000000,
+    });
+    transport.emitEvent({ tabId: 7 }, 'Page.frameNavigated', {
+      frame: { id: 11, loaderId: 'loader-abc' },
+      timestamp: 1700000000999,
+    });
+
+    const drained = observer.poll();
+    assert.equal(drained.length, 2);
+    for (const observation of drained) {
+      assert.equal(observation.acquisition, 'chrome-debugger');
+      assert.equal(observation.method, 'Page.frameNavigated');
+      assert.equal(observation.provenance.tabId, 7);
+      assert.equal(observation.provenance.frameId, 11);
+      assert.equal(observation.provenance.loaderId, 'loader-abc');
+      assert.equal(typeof observation.provenance.timestamp, 'number');
+    }
+  });
+
+  test('only recognized foundation events are elevated to observations', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(4, transport);
+    await observer.start();
+
+    transport.emitEvent({ tabId: 4 }, 'Page.someOtherEvent', { foo: 1 });
+    assert.equal(observer.drain().length, 0);
+
+    transport.emitEvent({ tabId: 4 }, 'Page.frameNavigated', {
+      frame: { id: 0, loaderId: 'l' },
+    });
+    assert.equal(observer.drain().length, 1);
+  });
+
+  test('Chrome-initiated detach stops the observer and clears stale observations', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(6, transport);
+    await observer.start();
+
+    transport.emitEvent({ tabId: 6 }, 'Page.frameNavigated', {
+      frame: { id: 0, loaderId: 'l' },
+    });
+    assert.equal(observer.isRunning(), true);
+
+    transport.emitDetach({ tabId: 6 }, 'target_closed');
+    assert.equal(observer.isRunning(), false);
+    assert.equal(observer.drain().length, 0);
+  });
+
+  test('detach from a different tab is ignored', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(6, transport);
+    await observer.start();
+
+    transport.emitDetach({ tabId: 999 }, 'target_closed');
+    assert.equal(observer.isRunning(), true);
+  });
+
+  test('stop detaches cleanly and a detach error does not break the caller', async () => {
+    const transport = makeTransport();
+    transport.detach = async (target) => {
+      transport.detachCalls.push(target);
+      throw new Error('already detached');
+    };
+    const observer = new ChromiumObserver(2, transport);
+
+    await observer.start();
+    await observer.stop();
+    assert.equal(observer.isRunning(), false);
+    assert.equal(transport.detachCalls.length, 1);
   });
 });

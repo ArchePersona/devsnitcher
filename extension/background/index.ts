@@ -2,9 +2,17 @@ import { redactEvidence } from '../../redaction/index';
 import { buildMarkdownReport } from '../../report/markdown';
 import { captureScreenshot } from '../../collectors/screenshot';
 import { EvidenceCache, base64ToBytes, bytesToBase64, isEvidenceShape } from './cache';
+import { ChromiumObserver } from '../../devpeeper/chromium';
+import { chromeDebuggerTransport } from '../../devpeeper/debugger-transport';
 import type { Evidence, SnitchMessage } from '../../shared/types';
 
 const CACHE_KEY_STORAGE = 'devsnitcher:evidence-cache-key:v1';
+
+// DEVPEEPER Chromium observation foundation. Owned here because chrome.debugger
+// is only available to trusted extension contexts. The observer exercises the
+// active-tab attachment lifecycle; its browser-observed observations are not yet
+// merged into evidence (that is later DEVPEEPER work).
+let chromiumObserver: ChromiumObserver | null = null;
 
 chrome.storage.session
   .setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
@@ -27,6 +35,10 @@ const cache = new EvidenceCache(
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   void cache.clear(tabId);
+  if (chromiumObserver?.attachedTabId === tabId) {
+    void chromiumObserver.stop().catch(() => undefined);
+    chromiumObserver = null;
+  }
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
@@ -97,6 +109,10 @@ chrome.runtime.onMessage.addListener(
       try {
         const tab = await getActiveTab();
 
+        // Establish the DEVPEEPER active-tab Chromium observation lifecycle.
+        // Best-effort and isolated so it never blocks or fails SNITCH.
+        void startActiveTabObservation(tab).catch(() => undefined);
+
         await ensureContentScript(tab.id!);
         const evidence = await getCachedEvidenceOrRefresh(tab.id!, tab.url!);
         const screenshot = msg.screenshot
@@ -153,6 +169,20 @@ async function getActiveTab(): Promise<chrome.tabs.Tab> {
   }
 
   return tab;
+}
+
+async function startActiveTabObservation(tab: chrome.tabs.Tab): Promise<void> {
+  const tabId = tab.id!;
+  if (chromiumObserver?.isRunning() && chromiumObserver.attachedTabId === tabId) return;
+
+  if (chromiumObserver?.isRunning()) {
+    await chromiumObserver.stop();
+    chromiumObserver = null;
+  }
+
+  const observer = new ChromiumObserver(tabId, chromeDebuggerTransport());
+  chromiumObserver = observer;
+  await observer.start();
 }
 
 async function pingContentScript(tabId: number): Promise<boolean> {

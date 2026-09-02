@@ -72,9 +72,13 @@ Screenshot capture remains tied to the user-triggered SNITCH path.
 
 Cache encryption protects accepted evidence while it is stored by the extension. It does not prove that every observation originally produced in page context is authentic.
 
-Environment, focused DOM and current selection are now acquired through `chrome.scripting.executeScript` and returned to the extension inside Chrome's `InjectionResult`, so a hostile page cannot forge those bounded observations by calling `window.postMessage`. Chrome authenticates that transport path; the page can still influence the underlying DOM/focus state it exposes.
+Environment, focused DOM and current selection are acquired through `chrome.scripting.executeScript` and returned to the extension inside Chrome's `InjectionResult`, so a hostile page cannot forge those bounded observations by calling `window.postMessage`. Chrome authenticates that transport path; the page can still influence the underlying DOM/focus state it exposes.
+
+Chromium-issued events are received through `chrome.debugger` attached to the **currently active tab only** to establish browser-observed provenance. The `debugger` permission is used deliberately for this; the extension does not monitor whole-browser targets. Chromium identifiers are provenance, not durable source identity.
 
 Console, network and JavaScript-error evidence still travel over the legacy page-facing `window.postMessage` bridge. A hostile webpage may attempt to fabricate that console/network/error evidence before the extension accepts and encrypts it. This console/network/error ingress remains unresolved pending later DEVPEEPER milestones.
+
+For all browser-mediated paths, Chrome authenticates the transport; it does not make page-controlled state truthful. Correlating page-reported data with a tab ID, URL, timestamp, or document identity does not promote it to browser-observed provenance.
 
 This is an evidence-integrity limitation, not a cloud-privacy change: the data still remains local unless the user chooses to paste the resulting report elsewhere.
 

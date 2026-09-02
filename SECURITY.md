@@ -36,6 +36,8 @@ DEVSnitcher is designed around these constraints:
 - The cache encryption key remains in trusted extension context
 - Per-tab cache records are cleared on tab close and navigation/load
 - Environment/DOM observations are acquired through `chrome.scripting.executeScript` and carried back in Chrome's `InjectionResult`, not through a page-authored message
+- Chromium observations are acquired through `chrome.debugger` attached to the active tab only, with browser-issued provenance; the `debugger` permission is required for this browser-observed path
+- Chromium identifiers are provenance, not durable source identity (no `SourceIdentity`, no per-navigation source rollover)
 
 The page-facing message bridge is limited to legacy console/network/error evidence collection. It is not a general command channel into the extension service worker.
 
@@ -98,11 +100,15 @@ The encrypted cache protects evidence **after DEVSnitcher accepts it for caching
 
 It does not authenticate the original producer of all evidence inside page context.
 
-DEVSnitcher has two evidence paths with different authenticity properties:
+DEVSnitcher has three evidence sources with different authenticity properties:
 
-**Chrome-mediated bounded observations.** Environment, focused DOM and current selection are acquired through `chrome.scripting.executeScript` from extension-controlled code. Chrome returns the result to the extension inside an `InjectionResult`, so a hostile page calling `window.postMessage` cannot forge or substitute these bounded observations. Chrome authenticates the execution/return transport path to the extension. It does **not** make the observed page state semantically truthful: the webpage can still influence the DOM, focus and selection exposed to the probe.
+**Browser-observed (Chromium/CDP).** Chromium-issued events are received through `chrome.debugger` attached to the active tab only, and associated with that attachment. Browser-issued provenance (`tabId`, `frameId`, `loaderId`, etc.) is preserved. The `debugger` permission is required for this path.
 
-**Legacy page-evidence ingress.** Console, network and JavaScript-error collection still uses the page-context `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` `window.postMessage` bridge. Ordinary page JavaScript shares that environment with the injected page script and may attempt to forge console/network/error evidence before the content bridge passes it into the trusted extension runtime. This ingress is legacy and remains unresolved pending later DEVPEEPER milestones.
+**Chrome-mediated bounded observations (browser-returned).** Environment, focused DOM and current selection are acquired through `chrome.scripting.executeScript` from extension-controlled code. Chrome returns the result to the extension inside an `InjectionResult`, so a hostile page calling `window.postMessage` cannot forge or substitute these bounded observations.
+
+For both browser-mediated paths, Chrome authenticates the transport path to the extension. This does **not** make the observed page state semantically truthful: the webpage can still influence the DOM, focus and selection exposed, and its own lifecycle events. Correlating page-reported data with a tab ID, URL, timestamp, document ID, script hash, or page message does **not** promote it to browser-observed provenance.
+
+**Legacy page-evidence ingress (page-reported).** Console, network and JavaScript-error collection still uses the page-context `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` `window.postMessage` bridge, which is not browser-authenticated. Ordinary page JavaScript shares that environment with the injected page script and may attempt to forge console/network/error evidence before the content bridge passes it into the trusted extension runtime. This ingress is legacy and remains unresolved pending later DEVPEEPER milestones.
 
 Therefore DEVSnitcher must not claim that the encrypted cache provides end-to-end evidence provenance for the legacy console/network/error path, nor that Chrome-mediated execution makes page-controlled state truthful.
 
@@ -111,8 +117,8 @@ This distinction matters:
 ```text
 Privileged-action authorization: protected by popup-only background enforcement.
 Stored-cache confidentiality/integrity: protected by extension-owned AES-GCM encryption and validation.
-Browser-mediated transport authenticity: environment/DOM return path authenticated by Chrome's InjectionResult.
-Original page-evidence ingress authenticity: console/network/error remain a separate unresolved trust-boundary concern, pending later DEVPEEPER milestones.
+Browser-mediated transport authenticity: bounded probe return authenticated by Chrome's InjectionResult; Chromium events via chrome.debugger (chrome-scripting / chrome-debugger).
+Original page-evidence ingress authenticity: console/network/error remain a separate unresolved trust-boundary concern, pending later DEVPEEPER milestones (page-reported).
 ```
 
 ---
@@ -173,6 +179,9 @@ Please report issues such as:
 - One tab consuming another tab's cached evidence
 - Stale cache surviving navigation and being consumed for a different page
 - Forged or untrusted page evidence being accepted as trusted extension output
+- The debugger being attached beyond the active tab, or CDP driving privileged/execution behavior rather than passive observation
+- Page-reported evidence being mislabeled or promoted to browser-observed provenance by correlation
+- A Chromium observation associated with the wrong tab, or surviving after Chrome detaches the session
 
 ---
 
