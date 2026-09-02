@@ -4,6 +4,11 @@ import { captureScreenshot } from '../../collectors/screenshot';
 import { EvidenceCache, base64ToBytes, bytesToBase64, isEvidenceShape } from './cache';
 import { ActiveTabObserverController } from '../../devpeeper/active-observer';
 import { chromeDebuggerTransport } from '../../devpeeper/debugger-transport';
+import { snapshotProbe, type BoundedSnapshot } from '../../devpeeper/snapshot-probe';
+import {
+  makeBoundedObservation,
+  type InjectionResultLike,
+} from '../../devpeeper/observation';
 import type { ConsoleEntry, Evidence, JsErrorEntry, NetworkEntry, SnitchMessage } from '../../shared/types';
 
 const CACHE_KEY_STORAGE = 'devsnitcher:evidence-cache-key:v1';
@@ -107,6 +112,49 @@ chrome.runtime.onMessage.addListener(
         } satisfies SnitchMessage);
       }
       return false;
+    }
+
+    if (msg?.type === 'GET_BOUNDED_OBSERVATION') {
+      // The DEVPEEPER bounded probe must run chrome.scripting.executeScript from
+      // a trusted extension context: chrome.scripting is unavailable to content
+      // scripts (it is undefined there). The content bridge therefore requests
+      // the observation here, and this background handler targets its own tab.
+      const tabId = sender.tab?.id;
+      if (tabId == null) {
+        sendResponse({
+          type: 'EVIDENCE_ERROR',
+          error: 'Rejected: no tab context for bounded observation.',
+        } satisfies SnitchMessage);
+        return false;
+      }
+
+      chrome.scripting
+        .executeScript<[], BoundedSnapshot>({
+          target: { tabId },
+          world: 'ISOLATED',
+          func: snapshotProbe,
+        })
+        .then((results) => {
+          const result = results[0] as
+            | (InjectionResultLike & { result?: BoundedSnapshot })
+            | undefined;
+          if (!result || !result.result) {
+            throw new Error('DEVPEEPER bounded probe returned no result');
+          }
+          const observation = makeBoundedObservation(result.result, result, tabId, Date.now());
+          sendResponse({
+            type: 'BOUNDED_OBSERVATION',
+            environment: observation.payload.environment,
+            dom: observation.payload.dom,
+          } satisfies SnitchMessage);
+        })
+        .catch((err) =>
+          sendResponse({
+            type: 'EVIDENCE_ERROR',
+            error: String(err),
+          } satisfies SnitchMessage),
+        );
+      return true;
     }
 
     if (msg?.type !== 'SNITCH') return false;

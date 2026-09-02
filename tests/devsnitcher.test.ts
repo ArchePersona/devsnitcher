@@ -1,5 +1,7 @@
 import { test, describe } from 'node:test';
 import * as assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { JSDOM } from 'jsdom';
 
 const dom = new JSDOM('<!doctype html><html><head><title>TestPage</title></head><body></body></html>', {
@@ -702,6 +704,29 @@ describe('DEVPEEPER Chrome-mediated bounded observation', () => {
     assert.equal(observation.provenance.frameId, 0);
     assert.equal(observation.provenance.documentId, undefined);
     assert.equal(observation.provenance.worldId, undefined);
+  });
+
+  test('bounded probe executes in the trusted background, not the content bundle', () => {
+    // chrome.scripting is not available to content-script contexts: it is
+    // undefined there, so a content script calling chrome.scripting.executeScript
+    // throws "Cannot read properties of undefined (reading 'executeScript')".
+    // The DEVPEEPER bounded probe must therefore be run from the background
+    // service worker. Guard that the content bridge never references the API.
+    const root = process.cwd();
+    const contentSource = readFileSync(join(root, 'extension', 'content', 'index.ts'), 'utf8');
+    const backgroundSource = readFileSync(
+      join(root, 'extension', 'background', 'index.ts'),
+      'utf8',
+    );
+
+    assert.ok(
+      !contentSource.includes('chrome.scripting.executeScript'),
+      'content bridge must not call chrome.scripting (unavailable in content scripts)',
+    );
+    assert.ok(
+      backgroundSource.includes('chrome.scripting'),
+      'background must own the chrome.scripting bounded-probe execution',
+    );
   });
 });
 

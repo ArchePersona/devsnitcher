@@ -74,6 +74,12 @@ export type SnitchMessage =
   | { type: 'CACHE_REFRESHED' }
   | { type: 'GET_TAB_ID' }
   | { type: 'TAB_ID'; tabId: number }
+  | { type: 'GET_BOUNDED_OBSERVATION' }
+  | {
+      type: 'BOUNDED_OBSERVATION';
+      environment: EnvironmentInfo;
+      dom: DomContext | null;
+    }
   | { type: 'PING' }
   | { type: 'PONG' }
   | { type: 'SNITCH'; userNotes: string; screenshot: boolean }
