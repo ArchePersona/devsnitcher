@@ -11,7 +11,9 @@ Current responsibility:
 - execute a bounded Chrome-mediated probe for environment, focused DOM and current selection through `chrome.scripting.executeScript`;
 - normalize Chrome's `InjectionResult` into a DEVPEEPER observation envelope (payload, acquisition mechanism, browser provenance);
 - attach a Chromium/CDP observer to the active tab through `chrome.debugger` and normalize browser-issued events into DEVPEEPER observations with preserved provenance;
-- start browser-side console, network, and JavaScript-error observation (legacy path, pending Chromium-native migration);
+- observe browser-issued console (`Runtime.consoleAPICalled`) and runtime-error (`Runtime.exceptionThrown`) events and normalize them into DEVSnitch console/JS-error evidence with preserved provenance;
+- follow the active tab while the extension operates so browser-observed console/runtime events are not missed before SNITCH is pressed;
+- start legacy network observation through the page bridge (the only remaining page-reported category, pending DEVPEEPER-004);
 - return a DEVSnitcher `Evidence` snapshot to the evidence assembly layer.
 
 Future Chromium-native observation work should land behind this boundary rather than expanding DEVSnitcher into a general PEEP runtime.
@@ -20,9 +22,9 @@ Future Chromium-native observation work should land behind this boundary rather 
 
 DEVPEEPER keeps acquisition mechanisms distinct by assurance level:
 
-1. **Browser-observed** — `chrome-debugger`: Chromium/CDP instrumentation → extension/DEVPEEPER. Established foundation milestone.
-2. **Browser-returned** — `chrome-scripting`: `chrome.scripting.executeScript` → Chrome `InjectionResult`.
-3. **Page-reported** — MAIN-world hook → page-mediated transport (legacy console/network/error ingress).
+1. **Browser-observed** — `chrome-debugger`: Chromium/CDP instrumentation → extension/DEVPEEPER. Now covers console and runtime errors.
+2. **Browser-returned** — `chrome-scripting`: `chrome.scripting.executeScript` → Chrome `InjectionResult`. Covers environment/DOM/selection.
+3. **Page-reported** — MAIN-world hook → page-mediated transport. Now covers network only.
 
 Correlating a page-reported value with a tab ID, URL, timestamp, document ID, script hash, or page message does **not** make it browser-observed. Browser-native provenance belongs only to data actually obtained through Chrome-controlled instrumentation or Chrome-controlled result transport.
 
@@ -31,14 +33,26 @@ Correlating a page-reported value with a tab ID, URL, timestamp, document ID, sc
 The Chromium observer:
 
 - attaches to the browser-selected active tab only (no whole-browser or multi-target monitoring);
-- enables only the minimal `Page` domain needed to establish the observation transport;
-- preserves browser-issued provenance (`tabId`, `frameId`, `loaderId`, `timestamp`, etc.) without inventing replacements;
+- enables only the minimal `Page` and `Runtime` domains needed for browser-observed console/runtime-error observation (`Network` is not enabled);
+- preserves browser-issued provenance (`tabId`, `frameId`, `loaderId`, `executionContextId`, `scriptId`, `timestamp`, etc.) without inventing replacements;
 - treats Chromium identifiers as provenance, not durable source identity. There is no `SourceIdentity` object and no per-navigation source rollover;
 - exercises passive observation (start/stop/isRunning/poll) — no command submission, no PEEP execution-adapter semantics;
-- attaches/detaches through the `chrome.debugger` permission, required for browser-observed provenance.
+- attaches/detaches through the `chrome.debugger` permission, required for browser-observed provenance;
+- accumulates bounded console (200) and runtime-error (50) history for the current active-tab session; the accumulation is cleared when the attachment is replaced, stopped or invalidated so evidence from different tabs never mixes.
 
-Environment / DOM / selection, console, network, and JS-error evidence:
-*Environment / DOM / selection* are browser-mediated through `chrome.scripting.executeScript`. Chrome returns the result in an `InjectionResult`, so a hostile page cannot forge it via `window.postMessage`.
-*Console / network / JS errors* are legacy page-context collection, still carried over the `window.postMessage` page bridge. This ingress is not browser-authenticated and is separate, unresolved security work.
+The active tab is followed continuously (`chrome.tabs.onActivated`) so observation begins when the tab becomes active rather than waiting for SNITCH. Only one active-tab observer exists at a time; switching tabs detaches the prior observer and attaches the new supported active tab. Browser-internal/unsupported pages are excluded.
 
-Moving more observation behind DEVPEEPER does not by itself authenticate the legacy `window.postMessage` evidence ingress.
+## Evidence status
+
+- **Browser-observed**: console; runtime exceptions/errors.
+- **Browser-returned**: environment; focused DOM; selection.
+- **Page-reported / legacy**: network only.
+
+At SNITCH time the background assembles the active-tab Chromium session's browser-observed console/runtime evidence into the trusted evidence path (→ encrypted cache → redaction → report). Page-authored `EVIDENCE_RESULT.console` / `EVIDENCE_RESULT.jsErrors` are not trusted for those fields. Chromium provenance describes observation, not the semantic truthfulness of what the page did.
+
+Console and runtime-error normalization is bounded and deterministic: it reads only browser-supplied fields (`value`, `unserializableValue`, `description`, `subtype`/`type`) and never executes page JavaScript or calls `Runtime.getProperties` to reconstruct formatting. `Runtime.exceptionThrown` does not expose a reliable promise-rejection flag, so the observer emits the honest `unhandled_exception` classification and does not synthesize `promise_rejection`.
+
+Environment / DOM / selection are browser-mediated through `chrome.scripting.executeScript`. Chrome returns the result in an `InjectionResult`, so a hostile page cannot forge it via `window.postMessage`.
+Network is still legacy page-context collection carried over the `window.postMessage` page bridge. This ingress is not browser-authenticated and is separate, unresolved security work (DEVPEEPER-004).
+
+Moving more observation behind DEVPEEPER does not by itself authenticate the legacy `window.postMessage` network ingress.

@@ -1,5 +1,12 @@
+import type { ConsoleEntry, JsErrorEntry } from '../shared/types';
 import type { ChromiumObservation } from './observation';
 import type { DebuggerTransport, DebuggerTarget } from './debugger-transport';
+import {
+  normalizeConsoleApi,
+  normalizeExceptionThrown,
+  type ConsoleApiParams,
+  type ExceptionThrownParams,
+} from './runtime-normalizer';
 
 /**
  * Passive observation lifecycle contract (sibling to PEEP's `ExecutionAdapter`).
@@ -16,8 +23,13 @@ export interface ObservationAdapter {
 
 const PROTOCOL_VERSION = '1.3';
 
-/** CDP domain enabled to establish the observation foundation. */
-export const CHROMIUM_DOMAINS = ['Page'] as const;
+/** CDP domains enabled for browser-observed console/runtime-error observation. */
+export const CHROMIUM_DOMAINS = ['Page', 'Runtime'] as const;
+
+/** Bounded console history retained for the current active-tab observation session. */
+export const CONSOLE_MAX_ENTRIES = 200;
+/** Bounded runtime-error history retained for the current active-tab observation session. */
+export const JSError_MAX_ENTRIES = 50;
 
 /**
  * DEVPEEPER Chromium/CDP observer.
@@ -38,6 +50,8 @@ export const CHROMIUM_DOMAINS = ['Page'] as const;
 export class ChromiumObserver implements ObservationAdapter {
   private running = false;
   private readonly buffer: ChromiumObservation[] = [];
+  private readonly consoleEntries: ConsoleEntry[] = [];
+  private readonly jsErrorEntries: JsErrorEntry[] = [];
   private readonly unsubscribers: Array<() => void> = [];
   private readonly target: DebuggerTarget;
 
@@ -64,6 +78,7 @@ export class ChromiumObserver implements ObservationAdapter {
       this.transport.onDetach((source, reason) => this.handleDetach(source, reason)),
     );
     await this.transport.sendCommand(this.target, 'Page.enable');
+    await this.transport.sendCommand(this.target, 'Runtime.enable');
     this.running = true;
   }
 
@@ -71,7 +86,7 @@ export class ChromiumObserver implements ObservationAdapter {
     if (!this.running) return;
     this.running = false;
     for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
-    this.buffer.length = 0;
+    this.clearSession();
 
     try {
       await this.transport.detach(this.target);
@@ -83,6 +98,16 @@ export class ChromiumObserver implements ObservationAdapter {
 
   isRunning(): boolean {
     return this.running;
+  }
+
+  /** Bounded accumulated console history for the current active-tab session. */
+  getConsoleEntries(): ConsoleEntry[] {
+    return this.consoleEntries.slice();
+  }
+
+  /** Bounded accumulated runtime-error history for the current active-tab session. */
+  getJsErrorEntries(): JsErrorEntry[] {
+    return this.jsErrorEntries.slice();
   }
 
   drain(): ChromiumObservation[] {
@@ -103,7 +128,16 @@ export class ChromiumObserver implements ObservationAdapter {
     if (!this.accepts(source)) return;
 
     const observation = this.normalize(method, params);
-    if (observation) this.buffer.push(observation);
+    if (!observation) return;
+
+    this.buffer.push(observation);
+    if (method === 'Runtime.consoleAPICalled') {
+      const entry = normalizeConsoleApi(params as ConsoleApiParams);
+      if (entry) this.pushConsole(entry);
+    } else if (method === 'Runtime.exceptionThrown') {
+      const entry = normalizeExceptionThrown(params as ExceptionThrownParams);
+      if (entry) this.pushJsError(entry);
+    }
   }
 
   private handleDetach(source: DebuggerTarget, _reason: string): void {
@@ -112,13 +146,29 @@ export class ChromiumObserver implements ObservationAdapter {
     // observer is no longer active and stale buffered observations must not be
     // presented as if they were from a live session.
     this.running = false;
-    this.buffer.length = 0;
+    this.clearSession();
     for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
   }
 
   private accepts(source: DebuggerTarget): boolean {
     // Accept instrumentation only for the active attachment/session.
     return source != null && source.tabId === this.tabId;
+  }
+
+  private pushConsole(entry: ConsoleEntry): void {
+    if (this.consoleEntries.length >= CONSOLE_MAX_ENTRIES) this.consoleEntries.shift();
+    this.consoleEntries.push(entry);
+  }
+
+  private pushJsError(entry: JsErrorEntry): void {
+    if (this.jsErrorEntries.length >= JSError_MAX_ENTRIES) this.jsErrorEntries.shift();
+    this.jsErrorEntries.push(entry);
+  }
+
+  private clearSession(): void {
+    this.buffer.length = 0;
+    this.consoleEntries.length = 0;
+    this.jsErrorEntries.length = 0;
   }
 
   private normalize(method: string, params?: unknown): ChromiumObservation | null {
@@ -142,8 +192,40 @@ export class ChromiumObserver implements ObservationAdapter {
       };
     }
 
-    // Only recognized foundation events are elevated to observations. Other
-    // browser events are left for later DEVPEEPER milestones.
+    if (method === 'Runtime.consoleAPICalled') {
+      const p = params as ConsoleApiParams | undefined;
+      const provenance: ChromiumObservation['provenance'] = { tabId: this.tabId };
+      if (typeof p?.executionContextId === 'number') {
+        provenance.executionContextId = p.executionContextId;
+      }
+      if (typeof p?.timestamp === 'number') provenance.timestamp = p.timestamp;
+      return {
+        acquisition: 'chrome-debugger',
+        method,
+        payload: params,
+        provenance,
+      };
+    }
+
+    if (method === 'Runtime.exceptionThrown') {
+      const p = params as ExceptionThrownParams | undefined;
+      const details = p?.exceptionDetails;
+      const provenance: ChromiumObservation['provenance'] = { tabId: this.tabId };
+      if (typeof p?.executionContextId === 'number') {
+        provenance.executionContextId = p.executionContextId;
+      }
+      if (typeof details?.scriptId === 'string') provenance.scriptId = details.scriptId;
+      if (typeof p?.timestamp === 'number') provenance.timestamp = p.timestamp;
+      return {
+        acquisition: 'chrome-debugger',
+        method,
+        payload: params,
+        provenance,
+      };
+    }
+
+    // Only recognized events are elevated to observations. Other browser events
+    // are left for later DEVPEEPER milestones.
     return null;
   }
 }

@@ -42,11 +42,22 @@ For the DEVPEEPER Chrome-mediated bounded observation, focused verification shou
 For the DEVPEEPER Chromium observation foundation, focused verification should establish at minimum:
 
 - the observer lifecycle (not running before start, running after start, stopped after stop)
-- attachment targets only the bound active tab and enables only the minimal `Page` domain
+- attachment targets only the bound active tab and enables the minimal `Page` and `Runtime` domains (never `Network`)
 - instrumentation is accepted only for the active attachment tab, not other tabs
 - browser-issued provenance (`tabId`, `frameId`, `loaderId`, `timestamp`) is preserved, and unrelated CDP methods are not elevated to observations
 - Chrome-initiated detach stops the observer and clears stale observations
 - a detach error does not break the caller
+
+For DEVPEEPER-003 browser-observed console + runtime errors, focused verification should establish at minimum:
+
+- `Runtime.enable` is added without `Network.enable`
+- supported `Runtime.consoleAPICalled` events normalize correctly (level mapping, bounded message formatting, stack)
+- unsupported console event types are ignored
+- `Runtime.exceptionThrown` normalizes without invented provenance and without synthesized `promise_rejection` classification
+- events from the wrong tab are rejected
+- console/error history is bounded (200 console, 50 errors) and cleared on detach
+- page-authored `EVIDENCE_RESULT.console` / `EVIDENCE_RESULT.jsErrors` cannot replace browser-observed values (background assembles console/jsErrors only from the active-tab Chromium session)
+- active-tab replacement does not mix buffered observations
 
 Keep this coverage proportional. Do not build a large mock framework solely to exercise browser APIs that are better proven manually.
 
@@ -166,7 +177,21 @@ This milestone establishes the active-tab Chromium/CDP attachment lifecycle. Bec
 4. Open Chrome DevTools for the attached tab (or close the tab) and confirm the observer reports not running after Chrome detaches it, with no stale observations presented as live.
 5. Confirm attachment is active-tab only: other tabs/targets are not enumerated or attached.
 
-This proves attachment, Chrome delivering instrumentation to the extension, DEVPEEPER associating it with the active-tab attachment, and provenance preservation. It is infrastructure proof only; console/network/error migration is not part of this milestone.
+This proves attachment, Chrome delivering instrumentation to the extension, DEVPEEPER associating it with the active-tab attachment, and provenance preservation. It is infrastructure proof only; console/error migration is verified in the next proof.
+
+---
+
+## DEVPEEPER browser-observed console + runtime errors proof
+
+This proof exercises the live debugger surface for console and runtime-error observation against the same narrow-mock limitation noted above.
+
+1. Load the extension and open a normal tab on `http://localhost:8088/test.html`; the background should attach the Chromium observer to the active tab on activation (no SNITCH needed), enabling `Page` and `Runtime` (never `Network`).
+2. From the page, call `console.log('hello')`, `console.error('boom')`, and `throw new Error('uncaught')` (or trigger an unhandled rejection).
+3. Click **SNITCH** and confirm the report's Console section contains the browser-observed `hello`/`boom` entries and the JavaScript section contains the thrown error — and that these come from the active-tab Chromium session, not the page message.
+4. From page JavaScript, post a forged `EVIDENCE_RESULT` whose `console`/`jsErrors` claim different values, then click **SNITCH**; confirm the report still uses the browser-observed values and ignores the forged ones.
+5. Switch to or open another tab and confirm a fresh active-tab attachment with no carried-over console/error history from the prior tab.
+
+This proves browser-observed console/runtime evidence arrives through the active-tab Chromium session, is preserved with provenance, and cannot be replaced by raced page-authored messages.
 
 ---
 

@@ -79,15 +79,17 @@ async function collectEvidenceFromPage(): Promise<Evidence> {
   // NOT from page-authored messages.
   const bounded = await acquireBoundedObservation();
 
-  // Console/network/JS-error collection still uses the legacy page path,
-  // pending later DEVPEEPER milestones. Only those fields are trusted here.
-  const legacy = await collectLegacyConsoleNetworkErrors();
+  // Console and runtime-error evidence are browser-observed through the
+  // active-tab Chromium session and are assembled in the background at SNITCH
+  // time; the page is not authoritative for them. Network evidence remains
+  // legacy/page-reported pending DEVPEEPER-004, so only network is trusted here.
+  const legacy = await collectLegacyNetwork();
 
   return {
     environment: bounded.payload.environment,
-    console: legacy.console,
+    console: [],
     network: legacy.network,
-    jsErrors: legacy.jsErrors,
+    jsErrors: [],
     dom: bounded.payload.dom,
     screenshot: null,
   };
@@ -122,9 +124,7 @@ async function acquireBoundedObservation(): Promise<BoundedObservation> {
   return makeBoundedObservation(result.result, result, tabId, Date.now());
 }
 
-function collectLegacyConsoleNetworkErrors(): Promise<
-  Pick<Evidence, 'console' | 'network' | 'jsErrors'>
-> {
+function collectLegacyNetwork(): Promise<Pick<Evidence, 'network'>> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       window.removeEventListener('message', handler);
@@ -138,13 +138,11 @@ function collectLegacyConsoleNetworkErrors(): Promise<
       clearTimeout(timer);
       window.removeEventListener('message', handler);
 
-      // Environment/DOM in this page-authored response are intentionally NOT used.
-      // Chrome-mediated bounded observation is authoritative for those fields.
-      const evidence = data.evidence;
+      // Environment/DOM/console/JS-error in this page-authored response are
+      // intentionally NOT used — Chrome-mediated observation is authoritative
+      // for those. Only network remains page-reported pending DEVPEEPER-004.
       resolve({
-        console: evidence.console,
-        network: evidence.network,
-        jsErrors: evidence.jsErrors,
+        network: data.evidence.network,
       });
     };
 

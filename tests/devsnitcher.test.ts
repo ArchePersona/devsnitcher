@@ -83,6 +83,7 @@ import {
 } from '../devpeeper/observation';
 import { ChromiumObserver } from '../devpeeper/chromium';
 import type { DebuggerTarget, DebuggerTransport } from '../devpeeper/debugger-transport';
+import { normalizeConsoleApi, normalizeExceptionThrown } from '../devpeeper/runtime-normalizer';
 import type { Evidence, NetworkEntry } from '../shared/types';
 
 describe('DEVSnitcher collectors', () => {
@@ -825,7 +826,7 @@ describe('DEVPEEPER Chromium observation foundation', () => {
     assert.equal(observer.isRunning(), false);
   });
 
-  test('start attaches to the bound tab and enables only the minimal Page domain', async () => {
+  test('start attaches to the bound tab and enables only the minimal domains', async () => {
     const transport = makeTransport();
     const observer = new ChromiumObserver(9, transport);
 
@@ -837,7 +838,7 @@ describe('DEVPEEPER Chromium observation foundation', () => {
 
     assert.deepEqual(
       transport.commands.map((c) => c.method),
-      ['Page.enable'],
+      ['Page.enable', 'Runtime.enable'],
     );
   });
 
@@ -937,5 +938,231 @@ describe('DEVPEEPER Chromium observation foundation', () => {
     await observer.stop();
     assert.equal(observer.isRunning(), false);
     assert.equal(transport.detachCalls.length, 1);
+  });
+});
+
+describe('DEVPEEPER browser-observed console + runtime errors', () => {
+  interface MockTransport extends DebuggerTransport {
+    attachCalls: Array<{ target: DebuggerTarget; version: string }>;
+    detachCalls: Array<DebuggerTarget>;
+    commands: Array<{ method: string; params?: unknown }>;
+    emitEvent(target: DebuggerTarget, method: string, params?: unknown): void;
+    emitDetach(target: DebuggerTarget, reason: string): void;
+  }
+
+  function makeTransport(): MockTransport {
+    const eventListeners: Array<
+      (target: DebuggerTarget, method: string, params?: unknown) => void
+    > = [];
+    const detachListeners: Array<(target: DebuggerTarget, reason: string) => void> = [];
+
+    const transport: MockTransport = {
+      attachCalls: [],
+      detachCalls: [],
+      commands: [],
+      attach: async (target, version) => {
+        transport.attachCalls.push({ target, version });
+      },
+      detach: async (target) => {
+        transport.detachCalls.push(target);
+      },
+      sendCommand: async (_target, method, params) => {
+        transport.commands.push({ method, params });
+        return {};
+      },
+      onEvent(listener) {
+        eventListeners.push(listener);
+        return () => {
+          const i = eventListeners.indexOf(listener);
+          if (i >= 0) eventListeners.splice(i, 1);
+        };
+      },
+      onDetach(listener) {
+        detachListeners.push(listener);
+        return () => {
+          const i = detachListeners.indexOf(listener);
+          if (i >= 0) detachListeners.splice(i, 1);
+        };
+      },
+      emitEvent(target, method, params) {
+        for (const l of [...eventListeners]) l(target, method, params);
+      },
+      emitDetach(target, reason) {
+        for (const l of [...detachListeners]) l(target, reason);
+      },
+    };
+
+    return transport;
+  }
+
+  test('start enables Runtime in addition to Page, and never Network', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(1, transport);
+    await observer.start();
+
+    const methods = transport.commands.map((c) => c.method);
+    assert.ok(methods.includes('Page.enable'));
+    assert.ok(methods.includes('Runtime.enable'));
+    assert.equal(methods.includes('Network.enable'), false);
+  });
+
+  test('Runtime.consoleAPICalled normalizes supported levels with message and stack', async () => {
+    const entry = normalizeConsoleApi({
+      type: 'error',
+      timestamp: 1700000000.5,
+      executionContextId: 12,
+      args: [
+        { type: 'string', value: 'boom:' },
+        { type: 'number', value: 500 },
+      ],
+      stackTrace: {
+        callFrames: [{ functionName: 'fetchData', url: 'app.js', lineNumber: 9, columnNumber: 3 }],
+      },
+    });
+
+    assert.ok(entry);
+    assert.equal(entry!.level, 'error');
+    assert.equal(entry!.message, 'boom: 500');
+    assert.equal(entry!.timestamp, 1700000000500);
+    assert.ok(entry!.stack!.includes('fetchData'));
+    assert.ok(entry!.stack!.includes('app.js:10:4'));
+  });
+
+  test('console type mapping and unsupported types are ignored', () => {
+    assert.equal(normalizeConsoleApi({ type: 'log', args: [{ type: 'string', value: 'x' }] })!.level, 'log');
+    assert.equal(normalizeConsoleApi({ type: 'info', args: [{ type: 'string', value: 'x' }] })!.level, 'info');
+    assert.equal(normalizeConsoleApi({ type: 'warning', args: [{ type: 'string', value: 'x' }] })!.level, 'warn');
+    assert.equal(normalizeConsoleApi({ type: 'debug', args: [{ type: 'string', value: 'x' }] })!.level, 'debug');
+    // Unsupported console types are not elevated.
+    assert.equal(normalizeConsoleApi({ type: 'table', args: [{ type: 'string', value: 'x' }] }), null);
+    assert.equal(normalizeConsoleApi({ type: 'dir', args: [{ type: 'string', value: 'x' }] }), null);
+  });
+
+  test('Runtime.exceptionThrown normalizes without invented promise_rejection type', () => {
+    const entry = normalizeExceptionThrown({
+      timestamp: 1700000000,
+      executionContextId: 5,
+      exceptionDetails: {
+        exceptionId: 3,
+        text: 'Uncaught Error: boom',
+        scriptId: '42',
+        url: 'https://example.com/app.js',
+        lineNumber: 7,
+        columnNumber: 2,
+        exception: {
+          type: 'object',
+          subtype: 'error',
+          description: 'Error: boom\n    at fn (https://example.com/app.js:8:4)',
+        },
+      },
+    });
+
+    assert.ok(entry);
+    assert.equal(entry!.type, 'unhandled_exception');
+    assert.equal(entry!.message, 'Uncaught Error: boom');
+    assert.equal(entry!.filename, 'https://example.com/app.js');
+    assert.equal(entry!.lineno, 7);
+    assert.equal(entry!.colno, 2);
+    assert.ok(entry!.stack.includes('fn'));
+  });
+
+  test('browser-observed exception does not fabricate values Chrome omitted', () => {
+    const entry = normalizeExceptionThrown({
+      exceptionDetails: { exceptionId: 1, text: 'boom' },
+    });
+    assert.ok(entry);
+    assert.equal(entry!.type, 'unhandled_exception');
+    assert.equal(entry!.message, 'boom');
+    assert.equal(entry!.filename, undefined);
+    assert.equal(entry!.lineno, undefined);
+    assert.equal(entry!.colno, undefined);
+    assert.equal(entry!.stack, '');
+  });
+
+  test('observer accumulates console and error entries for the active tab', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(8, transport);
+    await observer.start();
+
+    transport.emitEvent({ tabId: 8 }, 'Runtime.consoleAPICalled', {
+      type: 'log',
+      timestamp: 1700000000,
+      executionContextId: 1,
+      args: [{ type: 'string', value: 'hello' }],
+    });
+    transport.emitEvent({ tabId: 8 }, 'Runtime.exceptionThrown', {
+      timestamp: 1700000001,
+      executionContextId: 1,
+      exceptionDetails: { exceptionId: 1, text: 'boom' },
+    });
+
+    assert.equal(observer.getConsoleEntries().length, 1);
+    assert.equal(observer.getConsoleEntries()[0].message, 'hello');
+    assert.equal(observer.getJsErrorEntries().length, 1);
+    assert.equal(observer.getJsErrorEntries()[0].message, 'boom');
+
+    // Both are also retained as browser-observed observations with provenance.
+    const drained = observer.poll();
+    assert.equal(drained.length, 2);
+    for (const observation of drained) {
+      assert.equal(observation.acquisition, 'chrome-debugger');
+      assert.equal(observation.provenance.tabId, 8);
+    }
+  });
+
+  test('events from a different tab are rejected', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(8, transport);
+    await observer.start();
+
+    transport.emitEvent({ tabId: 999 }, 'Runtime.consoleAPICalled', {
+      type: 'error',
+      args: [{ type: 'string', value: 'forged' }],
+    });
+    transport.emitEvent({ tabId: 999 }, 'Runtime.exceptionThrown', {
+      exceptionDetails: { exceptionId: 1, text: 'forged' },
+    });
+
+    assert.equal(observer.getConsoleEntries().length, 0);
+    assert.equal(observer.getJsErrorEntries().length, 0);
+    assert.equal(observer.poll().length, 0);
+  });
+
+  test('console history is bounded at 200 and errors at 50', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(8, transport);
+    await observer.start();
+
+    for (let i = 0; i < 210; i += 1) {
+      transport.emitEvent({ tabId: 8 }, 'Runtime.consoleAPICalled', {
+        type: 'log',
+        args: [{ type: 'number', value: i }],
+      });
+    }
+    for (let i = 0; i < 60; i += 1) {
+      transport.emitEvent({ tabId: 8 }, 'Runtime.exceptionThrown', {
+        exceptionDetails: { exceptionId: i, text: `err ${i}` },
+      });
+    }
+
+    assert.equal(observer.getConsoleEntries().length, 200);
+    assert.equal(observer.getJsErrorEntries().length, 50);
+  });
+
+  test('Chrome detach clears accumulated browser-observed entries', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(8, transport);
+    await observer.start();
+
+    transport.emitEvent({ tabId: 8 }, 'Runtime.consoleAPICalled', {
+      type: 'log',
+      args: [{ type: 'string', value: 'hello' }],
+    });
+    assert.equal(observer.getConsoleEntries().length, 1);
+
+    transport.emitDetach({ tabId: 8 }, 'target_closed');
+    assert.equal(observer.getConsoleEntries().length, 0);
+    assert.equal(observer.getJsErrorEntries().length, 0);
+    assert.equal(observer.poll().length, 0);
   });
 });

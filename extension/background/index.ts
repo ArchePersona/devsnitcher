@@ -4,14 +4,16 @@ import { captureScreenshot } from '../../collectors/screenshot';
 import { EvidenceCache, base64ToBytes, bytesToBase64, isEvidenceShape } from './cache';
 import { ChromiumObserver } from '../../devpeeper/chromium';
 import { chromeDebuggerTransport } from '../../devpeeper/debugger-transport';
-import type { Evidence, SnitchMessage } from '../../shared/types';
+import type { ConsoleEntry, Evidence, JsErrorEntry, SnitchMessage } from '../../shared/types';
 
 const CACHE_KEY_STORAGE = 'devsnitcher:evidence-cache-key:v1';
 
 // DEVPEEPER Chromium observation foundation. Owned here because chrome.debugger
-// is only available to trusted extension contexts. The observer exercises the
-// active-tab attachment lifecycle; its browser-observed observations are not yet
-// merged into evidence (that is later DEVPEEPER work).
+// is only available to trusted extension contexts. The observer follows the
+// active tab while the extension operates and accumulates bounded browser-
+// observed console/runtime-error evidence for the current active-tab session.
+// That accumulated evidence is the authoritative console/error source at
+// SNITCH time; page-authored console/jsErrors are ignored.
 let chromiumObserver: ChromiumObserver | null = null;
 
 chrome.storage.session
@@ -32,6 +34,16 @@ const cache = new EvidenceCache(
   },
   getOrCreateCacheKey,
 );
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  // Follow the active tab while the extension operates so browser-observed
+  // console/runtime events are not missed before SNITCH is pressed. Only one
+  // active-tab observer exists at a time; a tab change detaches the prior one.
+  void chrome.tabs
+    .get(activeInfo.tabId)
+    .then((tab) => startActiveTabObservation(tab).catch(() => undefined))
+    .catch(() => undefined);
+});
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   void cache.clear(tabId);
@@ -115,10 +127,22 @@ chrome.runtime.onMessage.addListener(
 
         await ensureContentScript(tab.id!);
         const evidence = await getCachedEvidenceOrRefresh(tab.id!, tab.url!);
+
+        // Console and runtime-error evidence are browser-observed from the
+        // active-tab Chromium session. Page-authored EVIDENCE_RESULT.console /
+        // EVIDENCE_RESULT.jsErrors are never trusted here.
+        const observed = currentBrowserObservedEvidence(tab.id!);
+        evidence.console = observed.console;
+        evidence.jsErrors = observed.jsErrors;
+
         const screenshot = msg.screenshot
           ? await captureScreenshot(tab.windowId)
           : null;
         evidence.screenshot = screenshot;
+
+        // Persist the assembled (browser-observed) evidence into the encrypted
+        // cache so the cached record reflects the trusted evidence path.
+        await cache.store(tab.id!, tab.url!, evidence);
 
         const redacted = redactEvidence(evidence);
         const report = buildMarkdownReport({
@@ -159,20 +183,34 @@ async function getActiveTab(): Promise<chrome.tabs.Tab> {
     throw new Error('Active tab has no URL.');
   }
 
-  if (
-    tab.url.startsWith('chrome://') ||
-    tab.url.startsWith('chrome-extension://') ||
-    tab.url.startsWith('edge://') ||
-    tab.url.startsWith('about:')
-  ) {
+  if (!isSupportedTabUrl(tab.url)) {
     throw new Error('DEVSnitcher cannot inspect browser-internal pages.');
   }
 
   return tab;
 }
 
+function isSupportedTabUrl(url: string): boolean {
+  return (
+    !url.startsWith('chrome://') &&
+    !url.startsWith('chrome-extension://') &&
+    !url.startsWith('edge://') &&
+    !url.startsWith('about:')
+  );
+}
+
 async function startActiveTabObservation(tab: chrome.tabs.Tab): Promise<void> {
-  const tabId = tab.id!;
+  // Browser-internal/unsupported pages are excluded from observation. If the
+  // active tab is unsupported, detach any current observer rather than observe it.
+  if (!tab.id || !tab.url || !isSupportedTabUrl(tab.url)) {
+    if (chromiumObserver?.isRunning()) {
+      await chromiumObserver.stop();
+    }
+    chromiumObserver = null;
+    return;
+  }
+
+  const tabId = tab.id;
   if (chromiumObserver?.isRunning() && chromiumObserver.attachedTabId === tabId) return;
 
   if (chromiumObserver?.isRunning()) {
@@ -183,6 +221,24 @@ async function startActiveTabObservation(tab: chrome.tabs.Tab): Promise<void> {
   const observer = new ChromiumObserver(tabId, chromeDebuggerTransport());
   chromiumObserver = observer;
   await observer.start();
+}
+
+/**
+ * Browser-observed console/runtime-error evidence from the active-tab Chromium
+ * session. Empty when there is no live observer bound to `tabId`, so evidence
+ * from a replaced or invalidated attachment is never reused.
+ */
+function currentBrowserObservedEvidence(tabId: number): {
+  console: ConsoleEntry[];
+  jsErrors: JsErrorEntry[];
+} {
+  if (chromiumObserver?.isRunning() && chromiumObserver.attachedTabId === tabId) {
+    return {
+      console: chromiumObserver.getConsoleEntries(),
+      jsErrors: chromiumObserver.getJsErrorEntries(),
+    };
+  }
+  return { console: [], jsErrors: [] };
 }
 
 async function pingContentScript(tabId: number): Promise<boolean> {
