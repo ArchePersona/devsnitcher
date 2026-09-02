@@ -1,6 +1,5 @@
 import { collectDom } from '../collectors/dom';
 import { collectEnvironment } from '../collectors/environment';
-import { startNetworkCollector, collectNetwork } from '../collectors/network';
 import type { Evidence } from '../shared/types';
 
 let started = false;
@@ -11,26 +10,24 @@ let started = false;
  * It deliberately inherits only the observation behavior DEVSnitcher needs.
  * It does not depend on the PEEP runtime or any unrelated PEEP adapters.
  *
- * Only the legacy network collector is started here. Console and runtime-error
- * evidence are now browser-observed through the active-tab Chromium session in
- * the background, so the page no longer starts console/JS-error punch-to-page
- * collectors and is not authoritative for those fields.
+ * No legacy collectors are started here. Console, runtime-error and network
+ * evidence are all browser-observed through the active-tab Chromium session in
+ * the background, so the page is no longer authoritative for those fields and
+ * ordinary webpages no longer have their fetch/XHR modified.
  */
 export function startDevPeeper(): void {
   if (started) return;
   started = true;
-
-  startNetworkCollector();
 }
 
 export function collectDevPeeperEvidence(): Evidence {
   return {
     environment: collectEnvironment(),
-    // Console and runtime-error evidence are browser-observed, assembled from
-    // the active-tab Chromium observer at SNITCH time. They are not produced by
-    // the page here.
+    // Console, runtime-error and network evidence are browser-observed,
+    // assembled from the active-tab Chromium observer at SNITCH time. They are
+    // not produced by the page here.
     console: [],
-    network: collectNetwork(),
+    network: [],
     jsErrors: [],
     dom: collectDom(readSelection()),
     screenshot: null,

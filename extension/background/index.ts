@@ -4,7 +4,7 @@ import { captureScreenshot } from '../../collectors/screenshot';
 import { EvidenceCache, base64ToBytes, bytesToBase64, isEvidenceShape } from './cache';
 import { ChromiumObserver } from '../../devpeeper/chromium';
 import { chromeDebuggerTransport } from '../../devpeeper/debugger-transport';
-import type { ConsoleEntry, Evidence, JsErrorEntry, SnitchMessage } from '../../shared/types';
+import type { ConsoleEntry, Evidence, JsErrorEntry, NetworkEntry, SnitchMessage } from '../../shared/types';
 
 const CACHE_KEY_STORAGE = 'devsnitcher:evidence-cache-key:v1';
 
@@ -128,12 +128,13 @@ chrome.runtime.onMessage.addListener(
         await ensureContentScript(tab.id!);
         const evidence = await getCachedEvidenceOrRefresh(tab.id!, tab.url!);
 
-        // Console and runtime-error evidence are browser-observed from the
-        // active-tab Chromium session. Page-authored EVIDENCE_RESULT.console /
-        // EVIDENCE_RESULT.jsErrors are never trusted here.
-        const observed = currentBrowserObservedEvidence(tab.id!);
+        // Console, runtime-error and network evidence are browser-observed from
+        // the active-tab Chromium session. Page-authored EVIDENCE_RESULT.console /
+        // EVIDENCE_RESULT.jsErrors / EVIDENCE_RESULT.network are never trusted here.
+        const observed = await currentBrowserObservedEvidence(tab.id!);
         evidence.console = observed.console;
         evidence.jsErrors = observed.jsErrors;
+        evidence.network = observed.network;
 
         const screenshot = msg.screenshot
           ? await captureScreenshot(tab.windowId)
@@ -224,21 +225,23 @@ async function startActiveTabObservation(tab: chrome.tabs.Tab): Promise<void> {
 }
 
 /**
- * Browser-observed console/runtime-error evidence from the active-tab Chromium
- * session. Empty when there is no live observer bound to `tabId`, so evidence
- * from a replaced or invalidated attachment is never reused.
+ * Browser-observed console/runtime-error/network evidence from the active-tab
+ * Chromium session. Empty when there is no live observer bound to `tabId`, so
+ * evidence from a replaced or invalidated attachment is never reused.
  */
-function currentBrowserObservedEvidence(tabId: number): {
+async function currentBrowserObservedEvidence(tabId: number): Promise<{
   console: ConsoleEntry[];
   jsErrors: JsErrorEntry[];
-} {
+  network: NetworkEntry[];
+}> {
   if (chromiumObserver?.isRunning() && chromiumObserver.attachedTabId === tabId) {
     return {
       console: chromiumObserver.getConsoleEntries(),
       jsErrors: chromiumObserver.getJsErrorEntries(),
+      network: await chromiumObserver.getNetworkEntries(),
     };
   }
-  return { console: [], jsErrors: [] };
+  return { console: [], jsErrors: [], network: [] };
 }
 
 async function pingContentScript(tabId: number): Promise<boolean> {

@@ -62,7 +62,6 @@ setGlobal(
 // Now import collectors and report modules
 import { collectEnvironment } from '../collectors/environment';
 import { startConsoleCollector, collectConsole, resetConsole } from '../collectors/console';
-import { startNetworkCollector, collectNetwork, resetNetwork } from '../collectors/network';
 import { startJavaScriptCollector, collectJavaScript, resetJavaScript } from '../collectors/javascript';
 import { collectDom } from '../collectors/dom';
 import { captureScreenshot } from '../collectors/screenshot';
@@ -84,12 +83,11 @@ import {
 import { ChromiumObserver } from '../devpeeper/chromium';
 import type { DebuggerTarget, DebuggerTransport } from '../devpeeper/debugger-transport';
 import { normalizeConsoleApi, normalizeExceptionThrown } from '../devpeeper/runtime-normalizer';
-import type { Evidence, NetworkEntry } from '../shared/types';
+import type { Evidence } from '../shared/types';
 
 describe('DEVSnitcher collectors', () => {
   beforeEach(() => {
     resetConsole();
-    resetNetwork();
     resetJavaScript();
     window.document.body.innerHTML = '';
   });
@@ -129,49 +127,6 @@ describe('DEVSnitcher collectors', () => {
       assert.equal(entries[0].level, 'log');
       assert.ok(entries[0].message.includes('Status:'));
       assert.ok(entries[0].message.includes('500'));
-    });
-  });
-
-  describe('network collector', () => {
-    function setFetchMock(mock: (...args: unknown[]) => Promise<Response>): void {
-      Object.defineProperty(window, 'fetch', {
-        value: mock,
-        writable: true,
-        configurable: true,
-      });
-    }
-
-    test('captures failed fetch (404) with response preview', async () => {
-      setFetchMock(async () => new Response('Not Found', { status: 404 }));
-      startNetworkCollector();
-
-      await window.fetch('https://api.example.com/missing-api');
-      const entries = collectNetwork();
-      assert.equal(entries.length, 1);
-      const entry = entries[0] as NetworkEntry;
-      assert.equal(entry.url, 'https://api.example.com/missing-api');
-      assert.equal(entry.method, 'GET');
-      assert.equal(entry.status, 404);
-      assert.equal(entry.responsePreview, 'Not Found');
-      assert.ok(entry.duration >= 0);
-    });
-
-    test('does not capture successful requests', async () => {
-      setFetchMock(async () => new Response('ok', { status: 200 }));
-      startNetworkCollector();
-      await window.fetch('https://api.example.com/healthy');
-      const entries = collectNetwork();
-      assert.equal(entries.length, 0);
-    });
-
-    test('XHR wrapping tracks method, url, and headers from open/setRequestHeader', () => {
-      startNetworkCollector();
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', 'https://api.example.com/submit');
-      xhr.setRequestHeader('Content-Type', 'application/json');
-      assert.equal((xhr as any).__ds_method, 'POST');
-      assert.equal((xhr as any).__ds_url, 'https://api.example.com/submit');
-      assert.equal((xhr as any).__ds_headers['Content-Type'], 'application/json');
     });
   });
 
@@ -838,7 +793,7 @@ describe('DEVPEEPER Chromium observation foundation', () => {
 
     assert.deepEqual(
       transport.commands.map((c) => c.method),
-      ['Page.enable', 'Runtime.enable'],
+      ['Page.enable', 'Runtime.enable', 'Network.enable'],
     );
   });
 
@@ -995,7 +950,7 @@ describe('DEVPEEPER browser-observed console + runtime errors', () => {
     return transport;
   }
 
-  test('start enables Runtime in addition to Page, and never Network', async () => {
+  test('start enables Page, Runtime and Network domains', async () => {
     const transport = makeTransport();
     const observer = new ChromiumObserver(1, transport);
     await observer.start();
@@ -1003,7 +958,7 @@ describe('DEVPEEPER browser-observed console + runtime errors', () => {
     const methods = transport.commands.map((c) => c.method);
     assert.ok(methods.includes('Page.enable'));
     assert.ok(methods.includes('Runtime.enable'));
-    assert.equal(methods.includes('Network.enable'), false);
+    assert.ok(methods.includes('Network.enable'));
   });
 
   test('Runtime.consoleAPICalled normalizes supported levels with message and stack', async () => {
@@ -1164,5 +1119,342 @@ describe('DEVPEEPER browser-observed console + runtime errors', () => {
     assert.equal(observer.getConsoleEntries().length, 0);
     assert.equal(observer.getJsErrorEntries().length, 0);
     assert.equal(observer.poll().length, 0);
+  });
+});
+
+describe('DEVPEEPER browser-observed network (DEVPEEPER-004)', () => {
+  interface MockTransport extends DebuggerTransport {
+    attachCalls: Array<{ target: DebuggerTarget; version: string }>;
+    detachCalls: Array<DebuggerTarget>;
+    commands: Array<{ method: string; params?: unknown }>;
+    responseBodies: Record<string, { body: string; base64Encoded?: boolean }>;
+    getResponseBodyErrors: string[];
+    emitEvent(target: DebuggerTarget, method: string, params?: unknown): void;
+    emitDetach(target: DebuggerTarget, reason: string): void;
+  }
+
+  function makeTransport(): MockTransport {
+    const eventListeners: Array<
+      (target: DebuggerTarget, method: string, params?: unknown) => void
+    > = [];
+    const detachListeners: Array<(target: DebuggerTarget, reason: string) => void> = [];
+
+    const transport: MockTransport = {
+      attachCalls: [],
+      detachCalls: [],
+      commands: [],
+      responseBodies: {},
+      getResponseBodyErrors: [],
+      attach: async (target, version) => {
+        transport.attachCalls.push({ target, version });
+      },
+      detach: async (target) => {
+        transport.detachCalls.push(target);
+      },
+      sendCommand: async (_target, method, params) => {
+        transport.commands.push({ method, params });
+        if (method === 'Network.getResponseBody') {
+          const requestId = (params as { requestId?: string }).requestId ?? '';
+          if (transport.getResponseBodyErrors.includes(requestId)) {
+            throw new Error('body unavailable');
+          }
+          return transport.responseBodies[requestId] ?? {};
+        }
+        return {};
+      },
+      onEvent(listener) {
+        eventListeners.push(listener);
+        return () => {
+          const i = eventListeners.indexOf(listener);
+          if (i >= 0) eventListeners.splice(i, 1);
+        };
+      },
+      onDetach(listener) {
+        detachListeners.push(listener);
+        return () => {
+          const i = detachListeners.indexOf(listener);
+          if (i >= 0) detachListeners.splice(i, 1);
+        };
+      },
+      emitEvent(target, method, params) {
+        for (const l of [...eventListeners]) l(target, method, params);
+      },
+      emitDetach(target, reason) {
+        for (const l of [...detachListeners]) l(target, reason);
+      },
+    };
+
+    return transport;
+  }
+
+  test('normalizes an HTTP >=400 response into a NetworkEntry with bounded body preview', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(3, transport);
+    await observer.start();
+
+    const rid = 'req-1';
+    transport.emitEvent({ tabId: 3 }, 'Network.requestWillBeSent', {
+      requestId: rid,
+      timestamp: 100.0,
+      loaderId: 'loader-1',
+      frameId: 7,
+      request: {
+        url: 'https://api.example.com/missing',
+        method: 'GET',
+        headers: { 'X-Auth': 'token' },
+      },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.responseReceived', {
+      requestId: rid,
+      timestamp: 105.0,
+      response: { status: 404 },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.loadingFinished', {
+      requestId: rid,
+      timestamp: 110.0,
+    });
+
+    transport.responseBodies[rid] = { body: '{"error": "Not Found"}', base64Encoded: false };
+
+    const entries = await observer.getNetworkEntries();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].url, 'https://api.example.com/missing');
+    assert.equal(entries[0].method, 'GET');
+    assert.equal(entries[0].status, 404);
+    assert.equal(entries[0].duration, 10000);
+    assert.equal(entries[0].responsePreview, '{"error": "Not Found"}');
+    assert.deepEqual(entries[0].requestHeaders, { 'X-Auth': 'token' });
+
+    const bodyCmd = transport.commands.find((c) => c.method === 'Network.getResponseBody');
+    assert.ok(bodyCmd);
+    assert.deepEqual((bodyCmd.params as Record<string, unknown>).requestId, rid);
+  });
+
+  test('network observations and getNetworkEntries carry Chromium provenance', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(3, transport);
+    await observer.start();
+
+    transport.emitEvent({ tabId: 3 }, 'Network.requestWillBeSent', {
+      requestId: 'req-9',
+      timestamp: 1.0,
+      loaderId: 'loader-abc',
+      frameId: 4,
+      request: { url: 'https://api.example.com/x', method: 'GET' },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.responseReceived', {
+      requestId: 'req-9',
+      response: { status: 500 },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.loadingFinished', {
+      requestId: 'req-9',
+      timestamp: 2.0,
+    });
+
+    const observations = observer.drain();
+    assert.equal(observations.length, 3);
+    for (const observation of observations) {
+      assert.equal(observation.acquisition, 'chrome-debugger');
+      assert.equal(observation.provenance.tabId, 3);
+    }
+    assert.equal(observations[0].provenance.requestId, 'req-9');
+    assert.equal(observations[0].provenance.loaderId, 'loader-abc');
+    assert.equal(observations[0].provenance.frameId, 4);
+    assert.equal(typeof observations[0].provenance.timestamp, 'number');
+  });
+
+  test('a browser-reported failure normalizes to status 0 with errorText preview', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(3, transport);
+    await observer.start();
+
+    transport.emitEvent({ tabId: 3 }, 'Network.requestWillBeSent', {
+      requestId: 'req-fail',
+      timestamp: 10.0,
+      request: { url: 'https://api.example.com/down', method: 'POST' },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.loadingFailed', {
+      requestId: 'req-fail',
+      timestamp: 15.0,
+      errorText: 'net::ERR_CONNECTION_REFUSED',
+    });
+
+    const entries = await observer.getNetworkEntries();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].status, 0);
+    assert.equal(entries[0].responsePreview, 'net::ERR_CONNECTION_REFUSED');
+    assert.equal(entries[0].duration, 5000);
+
+    // A failed request has no body to fetch.
+    assert.equal(transport.commands.some((c) => c.method === 'Network.getResponseBody'), false);
+  });
+
+  test('successful requests are not retained as network evidence', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(3, transport);
+    await observer.start();
+
+    transport.emitEvent({ tabId: 3 }, 'Network.requestWillBeSent', {
+      requestId: 'req-200',
+      timestamp: 0.0,
+      request: { url: 'https://api.example.com/ok', method: 'GET' },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.responseReceived', {
+      requestId: 'req-200',
+      response: { status: 200 },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.loadingFinished', {
+      requestId: 'req-200',
+      timestamp: 1.0,
+    });
+
+    assert.equal((await observer.getNetworkEntries()).length, 0);
+  });
+
+  test('wrong-tab network events do not feed the tracker', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(3, transport);
+    await observer.start();
+
+    transport.emitEvent({ tabId: 999 }, 'Network.requestWillBeSent', {
+      requestId: 'forged',
+      timestamp: 0.0,
+      request: { url: 'https://evil.example.com', method: 'GET' },
+    });
+    transport.emitEvent({ tabId: 999 }, 'Network.responseReceived', {
+      requestId: 'forged',
+      response: { status: 500 },
+    });
+    transport.emitEvent({ tabId: 999 }, 'Network.loadingFinished', {
+      requestId: 'forged',
+      timestamp: 1.0,
+    });
+
+    assert.equal((await observer.getNetworkEntries()).length, 0);
+    assert.equal(observer.poll().length, 0);
+  });
+
+  test('network history is bounded at NETWORK_MAX_ENTRIES, dropping the oldest', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(3, transport);
+    await observer.start();
+
+    for (let i = 0; i < 120; i += 1) {
+      const rid = `req-${i}`;
+      transport.emitEvent({ tabId: 3 }, 'Network.requestWillBeSent', {
+        requestId: rid,
+        timestamp: i,
+        request: { url: `https://api.example.com/${i}`, method: 'GET' },
+      });
+      transport.emitEvent({ tabId: 3 }, 'Network.responseReceived', {
+        requestId: rid,
+        response: { status: 404 },
+      });
+      transport.emitEvent({ tabId: 3 }, 'Network.loadingFinished', {
+        requestId: rid,
+        timestamp: i + 1,
+      });
+    }
+
+    const entries = await observer.getNetworkEntries();
+    assert.equal(entries.length, 100);
+    assert.equal(entries[0].url, 'https://api.example.com/20');
+    assert.equal(entries[entries.length - 1].url, 'https://api.example.com/119');
+  });
+
+  test('a getResponseBody failure keeps the entry with an empty preview', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(3, transport);
+    await observer.start();
+
+    const rid = 'req-nobody';
+    transport.emitEvent({ tabId: 3 }, 'Network.requestWillBeSent', {
+      requestId: rid,
+      timestamp: 0.0,
+      request: { url: 'https://api.example.com/x', method: 'GET' },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.responseReceived', {
+      requestId: rid,
+      response: { status: 500 },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.loadingFinished', {
+      requestId: rid,
+      timestamp: 1.0,
+    });
+    transport.getResponseBodyErrors.push(rid);
+
+    const entries = await observer.getNetworkEntries();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].status, 500);
+    assert.equal(entries[0].responsePreview, '');
+  });
+
+  test('base64 response bodies are decoded into the bounded preview', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(3, transport);
+    await observer.start();
+
+    const rid = 'req-b64';
+    transport.emitEvent({ tabId: 3 }, 'Network.requestWillBeSent', {
+      requestId: rid,
+      timestamp: 0.0,
+      request: { url: 'https://api.example.com/x', method: 'GET' },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.responseReceived', {
+      requestId: rid,
+      response: { status: 404 },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.loadingFinished', {
+      requestId: rid,
+      timestamp: 1.0,
+    });
+    transport.responseBodies[rid] = {
+      body: Buffer.from('binary response content').toString('base64'),
+      base64Encoded: true,
+    };
+
+    const entries = await observer.getNetworkEntries();
+    assert.equal(entries[0].responsePreview, 'binary response content');
+  });
+
+  test('an in-flight HTTP failure is finalized by getNetworkEntries (SNITCH-time)', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(3, transport);
+    await observer.start();
+
+    transport.emitEvent({ tabId: 3 }, 'Network.requestWillBeSent', {
+      requestId: 'req-inflight',
+      timestamp: 0.0,
+      request: { url: 'https://api.example.com/late', method: 'GET' },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.responseReceived', {
+      requestId: 'req-inflight',
+      response: { status: 503 },
+    });
+    // No loadingFinished/loadingFailed yet.
+
+    const entries = await observer.getNetworkEntries();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].status, 503);
+  });
+
+  test('Chrome detach clears accumulated network history', async () => {
+    const transport = makeTransport();
+    const observer = new ChromiumObserver(3, transport);
+    await observer.start();
+
+    transport.emitEvent({ tabId: 3 }, 'Network.requestWillBeSent', {
+      requestId: 'req-a',
+      timestamp: 0.0,
+      request: { url: 'https://api.example.com/resource', method: 'GET' },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.responseReceived', {
+      requestId: 'req-a',
+      response: { status: 500 },
+    });
+    transport.emitEvent({ tabId: 3 }, 'Network.loadingFinished', { requestId: 'req-a', timestamp: 2.0 });
+
+    transport.emitDetach({ tabId: 3 }, 'target_closed');
+    assert.equal((await observer.getNetworkEntries()).length, 0);
   });
 });

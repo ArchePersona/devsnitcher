@@ -1,6 +1,15 @@
-import type { ConsoleEntry, JsErrorEntry } from '../shared/types';
+import type { ConsoleEntry, JsErrorEntry, NetworkEntry } from '../shared/types';
 import type { ChromiumObservation } from './observation';
 import type { DebuggerTransport, DebuggerTarget } from './debugger-transport';
+import {
+  NetworkTracker,
+  decodeResponseBody,
+  type GetResponseBodyResult,
+  type LoadingFailedParams,
+  type LoadingFinishedParams,
+  type RequestWillBeSentParams,
+  type ResponseReceivedParams,
+} from './network-normalizer';
 import {
   normalizeConsoleApi,
   normalizeExceptionThrown,
@@ -23,8 +32,8 @@ export interface ObservationAdapter {
 
 const PROTOCOL_VERSION = '1.3';
 
-/** CDP domains enabled for browser-observed console/runtime-error observation. */
-export const CHROMIUM_DOMAINS = ['Page', 'Runtime'] as const;
+/** CDP domains enabled for browser-observed console/runtime-error/network observation. */
+export const CHROMIUM_DOMAINS = ['Page', 'Runtime', 'Network'] as const;
 
 /** Bounded console history retained for the current active-tab observation session. */
 export const CONSOLE_MAX_ENTRIES = 200;
@@ -52,6 +61,7 @@ export class ChromiumObserver implements ObservationAdapter {
   private readonly buffer: ChromiumObservation[] = [];
   private readonly consoleEntries: ConsoleEntry[] = [];
   private readonly jsErrorEntries: JsErrorEntry[] = [];
+  private readonly networkTracker = new NetworkTracker();
   private readonly unsubscribers: Array<() => void> = [];
   private readonly target: DebuggerTarget;
 
@@ -79,6 +89,7 @@ export class ChromiumObserver implements ObservationAdapter {
     );
     await this.transport.sendCommand(this.target, 'Page.enable');
     await this.transport.sendCommand(this.target, 'Runtime.enable');
+    await this.transport.sendCommand(this.target, 'Network.enable');
     this.running = true;
   }
 
@@ -110,6 +121,33 @@ export class ChromiumObserver implements ObservationAdapter {
     return this.jsErrorEntries.slice();
   }
 
+  /**
+   * Bounded accumulated network history for the current active-tab session.
+   * Finalizes any in-flight requests and fetches bounded response bodies for the
+   * retained HTTP failures. A missing/failed body leaves the preview empty and
+   * never drops the entry.
+   */
+  async getNetworkEntries(): Promise<NetworkEntry[]> {
+    const { entries, needBody } = this.networkTracker.finalize();
+    for (const requestId of needBody) {
+      const entry = this.networkTracker.getEntryForRequest(requestId);
+      if (!entry) continue;
+      try {
+        const result = await this.transport.sendCommand(
+          this.target,
+          'Network.getResponseBody',
+          { requestId },
+        );
+        entry.responsePreview = decodeResponseBody(result as GetResponseBodyResult);
+      } catch {
+        // Body unavailable; keep the network entry with an empty preview.
+      } finally {
+        this.networkTracker.markBodyFetched(requestId);
+      }
+    }
+    return entries.slice();
+  }
+
   drain(): ChromiumObservation[] {
     if (this.buffer.length === 0) return [];
     return this.buffer.splice(0);
@@ -126,6 +164,16 @@ export class ChromiumObserver implements ObservationAdapter {
     params?: unknown,
   ): void {
     if (!this.accepts(source)) return;
+
+    if (method === 'Network.requestWillBeSent') {
+      this.networkTracker.onRequestWillBeSent(params as RequestWillBeSentParams);
+    } else if (method === 'Network.responseReceived') {
+      this.networkTracker.onResponseReceived(params as ResponseReceivedParams);
+    } else if (method === 'Network.loadingFinished') {
+      this.networkTracker.onLoadingFinished(params as LoadingFinishedParams);
+    } else if (method === 'Network.loadingFailed') {
+      this.networkTracker.onLoadingFailed(params as LoadingFailedParams);
+    }
 
     const observation = this.normalize(method, params);
     if (!observation) return;
@@ -169,6 +217,7 @@ export class ChromiumObserver implements ObservationAdapter {
     this.buffer.length = 0;
     this.consoleEntries.length = 0;
     this.jsErrorEntries.length = 0;
+    this.networkTracker.clear();
   }
 
   private normalize(method: string, params?: unknown): ChromiumObservation | null {
@@ -216,6 +265,35 @@ export class ChromiumObserver implements ObservationAdapter {
       }
       if (typeof details?.scriptId === 'string') provenance.scriptId = details.scriptId;
       if (typeof p?.timestamp === 'number') provenance.timestamp = p.timestamp;
+      return {
+        acquisition: 'chrome-debugger',
+        method,
+        payload: params,
+        provenance,
+      };
+    }
+
+    if (
+      method === 'Network.requestWillBeSent' ||
+      method === 'Network.responseReceived' ||
+      method === 'Network.loadingFinished' ||
+      method === 'Network.loadingFailed'
+    ) {
+      const p = params as
+        | RequestWillBeSentParams
+        | ResponseReceivedParams
+        | LoadingFinishedParams
+        | LoadingFailedParams
+        | undefined;
+      const provenance: ChromiumObservation['provenance'] = { tabId: this.tabId };
+      const requestId = p?.requestId;
+      if (typeof requestId === 'string') provenance.requestId = requestId;
+      const loaderId = (p as RequestWillBeSentParams)?.loaderId;
+      if (typeof loaderId === 'string') provenance.loaderId = loaderId;
+      const frameId = (p as RequestWillBeSentParams | ResponseReceivedParams)?.frameId;
+      if (typeof frameId === 'number') provenance.frameId = frameId;
+      const timestamp = p && ('timestamp' in p) ? p.timestamp : undefined;
+      if (typeof timestamp === 'number') provenance.timestamp = timestamp;
       return {
         acquisition: 'chrome-debugger',
         method,

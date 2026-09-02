@@ -79,16 +79,13 @@ async function collectEvidenceFromPage(): Promise<Evidence> {
   // NOT from page-authored messages.
   const bounded = await acquireBoundedObservation();
 
-  // Console and runtime-error evidence are browser-observed through the
-  // active-tab Chromium session and are assembled in the background at SNITCH
-  // time; the page is not authoritative for them. Network evidence remains
-  // legacy/page-reported pending DEVPEEPER-004, so only network is trusted here.
-  const legacy = await collectLegacyNetwork();
-
+  // Console, runtime-error and network evidence are all browser-observed
+  // through the active-tab Chromium session and assembled in the background at
+  // SNITCH time. The page is not authoritative for any of them.
   return {
     environment: bounded.payload.environment,
     console: [],
-    network: legacy.network,
+    network: [],
     jsErrors: [],
     dom: bounded.payload.dom,
     screenshot: null,
@@ -122,31 +119,4 @@ async function acquireBoundedObservation(): Promise<BoundedObservation> {
   }
 
   return makeBoundedObservation(result.result, result, tabId, Date.now());
-}
-
-function collectLegacyNetwork(): Promise<Pick<Evidence, 'network'>> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      window.removeEventListener('message', handler);
-      reject(new Error('Timeout waiting for page evidence'));
-    }, 8000);
-
-    const handler = (ev: MessageEvent) => {
-      if (ev.source !== window) return;
-      const data = ev.data as SnitchMessage | undefined;
-      if (!data || data.type !== 'EVIDENCE_RESULT') return;
-      clearTimeout(timer);
-      window.removeEventListener('message', handler);
-
-      // Environment/DOM/console/JS-error in this page-authored response are
-      // intentionally NOT used — Chrome-mediated observation is authoritative
-      // for those. Only network remains page-reported pending DEVPEEPER-004.
-      resolve({
-        network: data.evidence.network,
-      });
-    };
-
-    window.addEventListener('message', handler);
-    window.postMessage({ type: 'COLLECT_EVIDENCE' }, '*');
-  });
 }

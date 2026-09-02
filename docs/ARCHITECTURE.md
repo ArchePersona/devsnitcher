@@ -28,7 +28,7 @@ Everything else is secondary.
 ## Runtime flow
 
 1. DEVPEEPER's bounded probe observes environment, focused DOM and current selection through `chrome.scripting.executeScript` from extension-controlled code; Chrome returns the result inside its `InjectionResult`, not via a page-authored message.
-2. DEVPEEPER attaches a Chromium/CDP observer to the active tab through `chrome.debugger`, enabling the minimal `Page` and `Runtime` domains. Browser-issued console (`Runtime.consoleAPICalled`) and runtime-error (`Runtime.exceptionThrown`) events are normalized into DEVPEEPER observations with preserved provenance; the observer follows the active tab continuously. The page script still collects network evidence in page context through the narrow legacy bridge (the only remaining page-reported category).
+2. DEVPEEPER attaches a Chromium/CDP observer to the active tab through `chrome.debugger`, enabling the minimal `Page`, `Runtime` and `Network` domains. Browser-issued console (`Runtime.consoleAPICalled`), runtime-error (`Runtime.exceptionThrown`) and network (`Network.*`) events are normalized into DEVPEEPER observations with preserved provenance; the observer follows the active tab continuously. The legacy page bridge no longer supplies any evidence category and is scheduled for removal in DEVPEEPER-005.
 3. DEVPEEPER normalizes the Chrome-mediated bounded observation and the content bridge assembles the evidence snapshot.
 4. The content bridge sends accepted evidence to the background service worker through the extension runtime.
 5. Background validates the evidence payload, encrypts valid evidence with AES-256-GCM, and writes only ciphertext plus required metadata to `chrome.storage.session`.
@@ -76,11 +76,11 @@ DEVPEEPER has three distinct evidence sources, with different authenticity prope
 
 For both browser-mediated paths, Chrome authenticates the execution/return/instrumentation transport path to the extension. It does **not** make the observed page state semantically truthful — the webpage can still influence the DOM, focus, selection, console output and lifecycle it exposes. This is a transport-path authenticity property, not a claim that MAIN-world data is inherently trustworthy.
 
-**Page-reported (legacy ingress).** Network collection now uses the page-context `window.postMessage` `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` bridge — the only remaining page-reported category (pending DEVPEEPER-004). It is not browser-authenticated and is not labeled `chrome-debugger` or `chrome-scripting`. Correlating a page-reported value with tab ID, URL, timestamp, or document identity does **not** promote it to browser-observed evidence.
+**Page-reported (legacy ingress).** No longer carries any evidence category. The legacy page-context `window.postMessage` `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` bridge is inert (nothing in the content bridge posts `COLLECT_EVIDENCE` anymore) and is scheduled for removal in DEVPEEPER-005. It is not browser-authenticated and is not labeled `chrome-debugger` or `chrome-scripting`. Correlating a page-reported value with tab ID, URL, timestamp, or document identity does **not** promote it to browser-observed evidence.
 
-A hostile webpage cannot substitute console or runtime-error evidence by racing `window.postMessage({ type: 'EVIDENCE_RESULT', ... })`: page-authored `console` and `jsErrors` data are ignored, and browser-observed console/runtime evidence comes only from the trusted Chromium observer bound to the active tab. Events from another tab/debugger target are rejected, and stale observations from a detached/replaced attachment are never reused.
+A hostile webpage cannot substitute console, runtime-error or network evidence by racing `window.postMessage({ type: 'EVIDENCE_RESULT', ... })`: page-authored `console`, `jsErrors` and `network` data are ignored, and browser-observed console/runtime/network evidence comes only from the trusted Chromium observer bound to the active tab. Events from another tab/debugger target are rejected, and stale observations from a detached/replaced attachment are never reused.
 
-Encryption begins only after the extension accepts that evidence, so the encrypted cache protects accepted evidence at rest; it does **not** cryptographically prove the original page-context network producer was genuine. Network migration remains for a later DEVPEEPER milestone.
+Encryption begins only after the extension accepts that evidence, so the encrypted cache protects accepted evidence at rest; it does **not** cryptographically prove the original page-context producer was genuine. Network is now browser-observed, so the encrypted cache protects browser-authored evidence rather than a page-context legacy producer.
 
 ---
 
@@ -141,13 +141,13 @@ It runs extension-controlled code that observes the browser and page through bro
 Current DEVPEEPER paths:
 
 - **Chrome-mediated bounded probe** — executes a small self-contained probe in the tab's isolated world through `chrome.scripting.executeScript`. Chrome returns the result in an `InjectionResult` carrying browser-issued provenance (`tabId`, `frameId`, `documentId`). The probe reads environment, focused DOM context and current selection, starts no listeners, and never uses `window.postMessage`. Acquisition mechanism: `chrome-scripting` (browser-returned).
-- **Chromium observation of console + runtime errors** — attaches a Chromium/CDP observer to the currently active tab through `chrome.debugger`, enables the minimal `Page` and `Runtime` domains (not `Network`), and normalizes browser-issued events — `Page.frameNavigated`, `Runtime.consoleAPICalled`, `Runtime.exceptionThrown` — into DEVPEEPER observations with preserved provenance. Console and runtime-error evidence are browser-observed. Acquisition mechanism: `chrome-debugger` (browser-observed). Active-tab scope is deliberate: it does not monitor whole-browser or attach to every target, frame, worker, or background process.
+- **Chromium observation of console + runtime errors + network** — attaches a Chromium/CDP observer to the currently active tab through `chrome.debugger`, enables the minimal `Page`, `Runtime` and `Network` domains, and normalizes browser-issued events — `Page.frameNavigated`, `Runtime.consoleAPICalled`, `Runtime.exceptionThrown`, `Network.requestWillBeSent`, `Network.responseReceived`, `Network.loadingFinished`, `Network.loadingFailed` — into DEVPEEPER observations with preserved provenance. Console, runtime-error and network evidence are browser-observed. Acquisition mechanism: `chrome-debugger` (browser-observed). Active-tab scope is deliberate: it does not monitor whole-browser or attach to every target, frame, worker, or background process. Network normalization retains only HTTP failures (status `>= 400`) or browser-reported failures (status `0`), never full-traffic logging, bounded at 100 entries; response bodies are fetched via `Network.getResponseBody` only for retained HTTP failures and bounded to 1000 characters.
 
 The observer follows the currently active supported tab continuously (`chrome.tabs.onActivated`), so browser-observed console/runtime events are not missed before SNITCH is pressed. Only one active-tab observer exists at a time; switching tabs detaches the prior observer and attaches the new supported active tab, and browser-internal/unsupported pages are excluded. The observer accumulates bounded console (200) and runtime-error (50) history for the current active-tab session, cleared when the attachment is replaced, stopped or invalidated.
 
 The `debugger` permission is intentionally required for browser-observed provenance: DEVPEEPER uses Chromium instrumentation so observation authority comes from the browser boundary rather than page-authored JavaScript messages.
 
-Chromium identifiers are provenance, not durable source identity. DEVPEEPER does not implement a `SourceIdentity` object and does not create per-navigation source rollover; the active-tab attachment is the effective observation source. Network evidence is **not** yet migrated into these browser-observed events and remains page-reported.
+Chromium identifiers are provenance, not durable source identity. DEVPEEPER does not implement a `SourceIdentity` object and does not create per-navigation source rollover; the active-tab attachment is the effective observation source. Network evidence is now browser-observed alongside console and runtime errors.
 
 ---
 
@@ -160,8 +160,7 @@ Responsibilities:
 - Respond to PING/PONG checks
 - Resolve its host tab id through the background
 - Execute the DEVPEEPER bounded probe through `chrome.scripting.executeScript` and normalize its result into the evidence snapshot
-- Periodically request network evidence from the page script over the legacy page-evidence bridge
-- Assemble environment/DOM from the Chrome-mediated probe and network from the legacy path; console/jsErrors are left to the background's browser-observed Chromium session
+- Assemble environment/DOM from the Chrome-mediated probe; console/jsErrors/network are left to the background's browser-observed Chromium session
 - Prevent overlapping rolling-cache refreshes
 - Send accepted evidence to background with `CACHE_EVIDENCE`
 - Receive explicit `REFRESH_CACHE` fallback requests from background
@@ -172,15 +171,15 @@ The content bridge does not hold the encryption/decryption key and must not acce
 
 ### Page script
 
-The page script runs in the page context and currently supplies only the legacy network evidence path.
+The page script runs in the page context. After DEVPEEPER-004 it no longer supplies any evidence category: console, runtime-error and network evidence are all browser-observed and assembled by the background. The page script is inert (nothing in the content bridge posts `COLLECT_EVIDENCE` anymore) and is scheduled for removal in DEVPEEPER-005.
 
-Responsibilities (legacy, pending DEVPEEPER-004 migration):
+Responsibilities (legacy, scheduled for DEVPEEPER-005 removal):
 
-- Patch safe browser APIs needed for network capture
-- Observe failed network requests
-- Return network evidence when the content bridge asks
+- (previously) patch safe browser APIs needed for network capture
+- (previously) observe failed network requests
+- (previously) return network evidence when the content bridge asks
 
-Console and JavaScript-error collection is no longer started from the page path; those fields are browser-observed through the active-tab Chromium session. The page script does not author the environment/DOM observations — those come from the Chrome-mediated DEVPEEPER probe. The page script should collect evidence only. It should not diagnose, access the encrypted cache, hold its key, or initiate privileged extension actions.
+Console, JavaScript-error and network collection is no longer started from the page path; those fields are browser-observed through the active-tab Chromium session. The page script does not author the environment/DOM observations — those come from the Chrome-mediated DEVPEEPER probe. The page script should collect evidence only. It should not diagnose, access the encrypted cache, hold its key, or initiate privileged extension actions.
 
 ---
 
@@ -281,7 +280,7 @@ REFRESH_CACHE
 CACHE_REFRESHED
 ```
 
-`SNITCH` belongs only to the extension message path initiated by the popup and is rejected when relayed from a tab. Cache messages belong to the extension runtime path. `GET_TAB_ID`/`TAB_ID` are extension-internal orchestration between the content bridge and background. `COLLECT_EVIDENCE` and `EVIDENCE_RESULT` belong to the narrow, legacy page-evidence bridge that currently carries only network evidence.
+`SNITCH` belongs only to the extension message path initiated by the popup and is rejected when relayed from a tab. Cache messages belong to the extension runtime path. `GET_TAB_ID`/`TAB_ID` are extension-internal orchestration between the content bridge and background. `COLLECT_EVIDENCE` and `EVIDENCE_RESULT` belong to the narrow, legacy page-evidence bridge that no longer carries any evidence category (scheduled for removal in DEVPEEPER-005).
 
 ---
 
@@ -296,7 +295,7 @@ Current intended scope includes:
 "host_permissions": ["http://*/*", "https://*/*"]
 ```
 
-The `debugger` permission exists intentionally for browser-observed provenance: DEVPEEPER uses Chromium/CDP instrumentation (`chrome.debugger`) so observation authority comes from the browser boundary rather than page-authored JavaScript messages. It attaches only to the active tab and enables only the minimal `Page` and `Runtime` domains (not `Network`). No unrelated permission was added.
+The `debugger` permission exists intentionally for browser-observed provenance: DEVPEEPER uses Chromium/CDP instrumentation (`chrome.debugger`) so observation authority comes from the browser boundary rather than page-authored JavaScript messages. It attaches only to the active tab and enables only the minimal `Page`, `Runtime` and `Network` domains. No unrelated permission was added.
 
 Browser-internal pages such as `chrome://`, `edge://`, and `chrome-extension://` should not be inspected.
 

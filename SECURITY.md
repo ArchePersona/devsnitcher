@@ -37,10 +37,10 @@ DEVSnitcher is designed around these constraints:
 - Per-tab cache records are cleared on tab close and navigation/load
 - Environment/DOM observations are acquired through `chrome.scripting.executeScript` and carried back in Chrome's `InjectionResult`, not through a page-authored message
 - Chromium observations are acquired through `chrome.debugger` attached to the active tab only, with browser-issued provenance; the `debugger` permission is required for this browser-observed path
-- Browser-observed console and runtime-error evidence comes only from the trusted Chromium observer bound to the active tab; page-authored `console`/`jsErrors` data is ignored
+- Browser-observed console, runtime-error and network evidence comes only from the trusted Chromium observer bound to the active tab; page-authored `console`/`jsErrors`/`network` data is ignored
 - Chromium identifiers are provenance, not durable source identity (no `SourceIdentity`, no per-navigation source rollover)
 
-The page-facing message bridge is limited to legacy network evidence collection. It is not a general command channel into the extension service worker.
+The page-facing message bridge no longer carries any evidence category (network is now browser-observed); it is inert and scheduled for removal in DEVPEEPER-005. It is not a general command channel into the extension service worker.
 
 ---
 
@@ -103,25 +103,25 @@ It does not authenticate the original producer of all evidence inside page conte
 
 DEVSnitcher has three evidence sources with different authenticity properties:
 
-**Browser-observed (Chromium/CDP).** Chromium-issued events — including console (`Runtime.consoleAPICalled`) and runtime errors (`Runtime.exceptionThrown`) — are received through `chrome.debugger` attached to the active tab only, and associated with that attachment. Browser-issued provenance (`tabId`, `frameId`, `loaderId`, `executionContextId`, `scriptId`, `timestamp`, etc.) is preserved. The `debugger` permission is required for this path.
+**Browser-observed (Chromium/CDP).** Chromium-issued events — including console (`Runtime.consoleAPICalled`), runtime errors (`Runtime.exceptionThrown`) and network (`Network.requestWillBeSent`/`responseReceived`/`loadingFinished`/`loadingFailed`) — are received through `chrome.debugger` attached to the active tab only, and associated with that attachment. Browser-issued provenance (`tabId`, `frameId`, `loaderId`, `executionContextId`, `scriptId`, `requestId`, `timestamp`, etc.) is preserved. The `debugger` permission is required for this path. Network normalization retains only HTTP failures (status `>= 400`) or browser-reported failures (status `0`) and fetches response bodies only for retained HTTP failures, bounded to 1000 characters and 100 entries per active-tab session.
 
 **Chrome-mediated bounded observations (browser-returned).** Environment, focused DOM and current selection are acquired through `chrome.scripting.executeScript` from extension-controlled code. Chrome returns the result to the extension inside an `InjectionResult`, so a hostile page calling `window.postMessage` cannot forge or substitute these bounded observations.
 
 For both browser-mediated paths, Chrome authenticates the transport path to the extension. This does **not** make the observed page state semantically truthful: the webpage can still influence the DOM, focus, selection, console output and lifecycle it exposes. Correlating page-reported data with a tab ID, URL, timestamp, document ID, script hash, or page message does **not** promote it to browser-observed provenance.
 
-**Legacy page-evidence ingress (page-reported).** Only **network** collection still uses the page-context `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` `window.postMessage` bridge, which is not browser-authenticated. Ordinary page JavaScript shares that environment with the injected page script and may attempt to forge network evidence before the content bridge passes it into the trusted extension runtime. This ingress is legacy and remains unresolved pending DEVPEEPER-004.
+**Legacy page-evidence ingress (page-reported).** The page-context `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` `window.postMessage` bridge is not browser-authenticated. After DEVPEEPER-004 it no longer carries any evidence category: console, runtime-error and network evidence are all browser-observed, and the content bridge no longer posts `COLLECT_EVIDENCE`. The bridge is inert and scheduled for removal in DEVPEEPER-005.
 
-After this milestone a hostile webpage **cannot** substitute console or runtime-error evidence by racing `window.postMessage({ type: 'EVIDENCE_RESULT', ... })`: page-authored `console` and `jsErrors` data are ignored, browser-observed console/runtime evidence comes only from the trusted Chromium observer bound to the active tab, events from another tab/debugger target are rejected, and stale observations from a detached/replaced attachment are not reused.
+After this milestone a hostile webpage **cannot** substitute console, runtime-error or network evidence by racing `window.postMessage({ type: 'EVIDENCE_RESULT', ... })`: page-authored `console`, `jsErrors` and `network` data are ignored, browser-observed console/runtime/network evidence comes only from the trusted Chromium observer bound to the active tab, events from another tab/debugger target are rejected, and stale observations from a detached/replaced attachment are not reused.
 
-Therefore DEVSnitcher must not claim that the encrypted cache provides end-to-end evidence provenance for the legacy network path, nor that Chrome-mediated observation makes page-controlled state truthful. Browser-observed provenance is provenance of observation, not truthfulness of the page's behavior.
+Therefore DEVSnitcher must not claim that Chrome-mediated observation makes page-controlled state truthful. Browser-observed provenance is provenance of observation, not truthfulness of the page's behavior.
 
 This distinction matters:
 
 ```text
 Privileged-action authorization: protected by popup-only background enforcement.
 Stored-cache confidentiality/integrity: protected by extension-owned AES-GCM encryption and validation.
-Browser-mediated transport authenticity: bounded probe return authenticated by Chrome's InjectionResult; Chromium console/runtime events via chrome.debugger (chrome-scripting / chrome-debugger).
-Original page-evidence ingress authenticity: network remains a separate unresolved trust-boundary concern, pending DEVPEEPER-004 (page-reported).
+Browser-mediated transport authenticity: bounded probe return authenticated by Chrome's InjectionResult; Chromium console/runtime/network events via chrome.debugger (chrome-scripting / chrome-debugger).
+Legacy page-evidence ingress authenticity: no longer applicable — no evidence category uses the page-reporting bridge after DEVPEEPER-004; scheduled for removal in DEVPEEPER-005.
 ```
 
 ---
@@ -185,8 +185,9 @@ Please report issues such as:
 - The debugger being attached beyond the active tab, or CDP driving privileged/execution behavior rather than passive observation
 - Page-reported evidence being mislabeled or promoted to browser-observed provenance by correlation
 - A Chromium observation associated with the wrong tab, or surviving after Chrome detaches the session
-- Page-authored console/runtime errors racing `window.postMessage` to replace browser-observed console/runtime evidence
-- Browser-observed console/runtime evidence from another tab, or stale console/runtime evidence from a replaced/detached attachment, being reused
+- Page-authored console/runtime/network evidence racing `window.postMessage` to replace browser-observed console/runtime/network evidence
+- Browser-observed console/runtime/network evidence from another tab, or stale evidence from a replaced/detached attachment, being reused
+- A network response body being fetched for anything other than a retained HTTP failure, or a retained network failure exceeding the 100-entry / 1000-character bounds
 
 ---
 

@@ -42,15 +42,15 @@ For the DEVPEEPER Chrome-mediated bounded observation, focused verification shou
 For the DEVPEEPER Chromium observation foundation, focused verification should establish at minimum:
 
 - the observer lifecycle (not running before start, running after start, stopped after stop)
-- attachment targets only the bound active tab and enables the minimal `Page` and `Runtime` domains (never `Network`)
+- attachment targets only the bound active tab and enables the minimal `Page`, `Runtime` and `Network` domains
 - instrumentation is accepted only for the active attachment tab, not other tabs
-- browser-issued provenance (`tabId`, `frameId`, `loaderId`, `timestamp`) is preserved, and unrelated CDP methods are not elevated to observations
+- browser-issued provenance (`tabId`, `frameId`, `loaderId`, `requestId`, `timestamp`) is preserved, and unrelated CDP methods are not elevated to observations
 - Chrome-initiated detach stops the observer and clears stale observations
 - a detach error does not break the caller
 
 For DEVPEEPER-003 browser-observed console + runtime errors, focused verification should establish at minimum:
 
-- `Runtime.enable` is added without `Network.enable`
+- `Network.enable` is added together with `Page.enable` and `Runtime.enable`
 - supported `Runtime.consoleAPICalled` events normalize correctly (level mapping, bounded message formatting, stack)
 - unsupported console event types are ignored
 - `Runtime.exceptionThrown` normalizes without invented provenance and without synthesized `promise_rejection` classification
@@ -185,13 +185,28 @@ This proves attachment, Chrome delivering instrumentation to the extension, DEVP
 
 This proof exercises the live debugger surface for console and runtime-error observation against the same narrow-mock limitation noted above.
 
-1. Load the extension and open a normal tab on `http://localhost:8088/test.html`; the background should attach the Chromium observer to the active tab on activation (no SNITCH needed), enabling `Page` and `Runtime` (never `Network`).
+1. Load the extension and open a normal tab on `http://localhost:8088/test.html`; the background should attach the Chromium observer to the active tab on activation (no SNITCH needed), enabling `Page`, `Runtime` and `Network`.
 2. From the page, call `console.log('hello')`, `console.error('boom')`, and `throw new Error('uncaught')` (or trigger an unhandled rejection).
 3. Click **SNITCH** and confirm the report's Console section contains the browser-observed `hello`/`boom` entries and the JavaScript section contains the thrown error — and that these come from the active-tab Chromium session, not the page message.
 4. From page JavaScript, post a forged `EVIDENCE_RESULT` whose `console`/`jsErrors` claim different values, then click **SNITCH**; confirm the report still uses the browser-observed values and ignores the forged ones.
 5. Switch to or open another tab and confirm a fresh active-tab attachment with no carried-over console/error history from the prior tab.
 
 This proves browser-observed console/runtime evidence arrives through the active-tab Chromium session, is preserved with provenance, and cannot be replaced by raced page-authored messages.
+
+---
+
+## DEVPEEPER browser-observed network proof (DEVPEEPER-004)
+
+This proof exercises the live debugger surface for the browser-observed network path against the same narrow-mock limitation noted above.
+
+1. Load the extension and open a normal tab on `http://localhost:8088/test.html`; the background should attach the Chromium observer to the active tab on activation (no SNITCH needed), enabling the `Network` domain.
+2. From the page, trigger a failing HTTP request (e.g. fetch a URL that returns `404`/`500`, and force a browser-level failure such as a connection-refused request) and confirm the report's Network section contains those failed requests with method, URL, status (or `0` for a browser-level failure), Chrome monotonic duration, and a bounded response preview.
+3. Confirm successful 2xx/3xx requests do **not** appear in the report.
+4. From page JavaScript, post a forged `EVIDENCE_RESULT` whose `network` claims a different set of failed requests, then click **SNITCH**; confirm the report still uses the browser-observed network entries and ignores the forged ones.
+5. Confirm the page-context network monkey-patch is gone: the background/content bundle no longer starts `startNetworkCollector`, and ordinary page `fetch`/`XHR` are no longer wrapped (inspect the content-script/background bundle).
+6. Switch to or open another tab and confirm a fresh active-tab attachment with no carried-over network history from the prior tab.
+
+This proves failed-network evidence now arrives browser-observed through the active-tab Chromium session, preserved with provenance, bounded, and cannot be replaced by page-authored messages.
 
 ---
 
@@ -225,11 +240,9 @@ Do **not** use successful encrypted-cache or SNITCH-boundary tests as proof that
 
 Environment, focused DOM and current selection are browser-mediated: acquired through `chrome.scripting.executeScript` and returned in Chrome's `InjectionResult`, so a page calling `window.postMessage` cannot forge those bounded observations. Chrome authenticates the transport path; it does not make the underlying page-controlled DOM/focus state truthful.
 
-Console, network and JavaScript-error evidence still travel over the legacy page-facing `window.postMessage` transport for `COLLECT_EVIDENCE` / `EVIDENCE_RESULT`. A hostile page script may attempt to fabricate that console/network/error evidence before the content bridge accepts it.
+Console, runtime-error and network evidence all travel browser-observed through the active-tab Chromium session; the page-facing `window.postMessage` `COLLECT_EVIDENCE`/`EVIDENCE_RESULT` bridge no longer carries any evidence category. A hostile page script can no longer fabricate console, network or error evidence, because the content bridge ignores page-authored `console`/`jsErrors`/`network` and that bridge is inert after DEVPEEPER-004 (scheduled for removal in DEVPEEPER-005).
 
 The encrypted cache begins protecting evidence only after that acceptance point.
-
-Treat page-context console/network/error ingress authenticity as separate security work, planned for later DEVPEEPER milestones.
 
 ---
 
