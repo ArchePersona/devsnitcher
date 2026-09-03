@@ -62,8 +62,35 @@ async function writeImageAndText(input: ClipboardWriteInput): Promise<void> {
 }
 
 /**
+ * Diagnostic build marker for this clipboard code path. Surfaced in the console
+ * so a live test proves the loaded extension is executing this exact build
+ * (`a769e19+diag`) rather than an unrelated/stale path. Diagnostic only.
+ */
+const CLIPBOARD_BUILD = 'a769e19+diag';
+
+/**
+ * Deterministic, safe fingerprint of the report: length, a hash and the first
+ * characters. Used to prove the same text reaches each boundary without dumping
+ * the full private report.
+ */
+export function fingerprint(text: string): string {
+  let hash = 0;
+  for (let i = 0; i < text.length; i++) {
+    hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+  }
+  const head = text.slice(0, 80).replace(/[\r\n]+/g, '\\n');
+  return `len=${text.length} hash=${hash} head="${head}"`;
+}
+
+/**
  * Writes `text` to the OS clipboard via `document.execCommand('copy')`.
  * Throws on failure — it never reports success unless execCommand returned true.
+ *
+ * Emits bounded console diagnostics (build marker, textarea value length,
+ * selected length, whether the selected text matched the requested report, and
+ * the raw execCommand result) so a live test can distinguish "correct report
+ * reached the copy mechanism" from "wrong/empty text reached the copy
+ * mechanism" and whether the browser wrote (true) or refused (false).
  */
 export function writeTextViaDomCopy(text: string): void {
   const doc = typeof document === 'undefined' ? null : document;
@@ -84,14 +111,29 @@ export function writeTextViaDomCopy(text: string): void {
   doc.body.appendChild(textarea);
 
   let succeeded = false;
+  let textareaLen = 0;
+  let selectedLen = 0;
+  let selectedMatches = false;
   try {
     textarea.focus();
     textarea.select();
     textarea.setSelectionRange(0, text.length);
+    textareaLen = textarea.value.length;
+    selectedLen = (doc.getSelection()?.toString().length ?? 0);
+    selectedMatches =
+      typeof doc.getSelection?.() === 'function' &&
+      doc.getSelection()?.toString() === text;
     succeeded = doc.execCommand('copy');
   } finally {
     textarea.remove();
   }
+
+  console.info(
+    `[DEVSnitcher:${CLIPBOARD_BUILD}] execCommand copy: ` +
+      `requested=${fingerprint(text)} ` +
+      `textareaLen=${textareaLen} selectedLen=${selectedLen} ` +
+      `selectedMatch=${selectedMatches} result=${succeeded}`,
+  );
 
   if (!succeeded) {
     throw new Error('The system clipboard rejected the copy. Try pressing COPY again.');
