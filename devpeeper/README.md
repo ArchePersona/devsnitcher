@@ -4,7 +4,7 @@ DEVPEEPER is DEVSnitcher's browser-specific sensing layer.
 
 It is derived from PEEP's observation model, but it is not the PEEP runtime and does not inherit unrelated adapters or execution machinery.
 
-DEVPEEPER owns only the browser observation behavior DEVSnitcher needs. DEVSnitcher remains responsible for evidence assembly, encrypted caching, redaction, screenshots, reporting, and the SNITCH user flow.
+DEVPEEPER owns only the browser observation behavior DEVSnitcher needs. DEVSnitcher remains responsible for evidence assembly, redaction, screenshots, reporting, and the SNITCH user flow.
 
 Current responsibility:
 

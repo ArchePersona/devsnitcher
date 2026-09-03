@@ -7,10 +7,6 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const distDir = join(root, 'dist');
 const watch = process.argv.includes('--watch');
 
-const classicEntries = {
-  'content': join(root, 'extension', 'content', 'index.ts'),
-};
-
 const moduleEntries = {
   'background': join(root, 'extension', 'background', 'index.ts'),
   'popup': join(root, 'extension', 'popup', 'popup.ts'),
@@ -47,6 +43,16 @@ function ensureDist() {
   }
 }
 
+// Clear stale bundle outputs before building so removed entries (e.g. the old
+// content.js rolling-cache script) never linger in the loaded extension.
+function cleanStaleBundles() {
+  if (!existsSync(distDir)) return;
+  for (const stale of ['content.js', 'background.js', 'popup.js']) {
+    const p = join(distDir, stale);
+    if (existsSync(p)) rmSync(p, { force: true });
+  }
+}
+
 async function copyAssets() {
   ensureDist();
   for (const [name, src] of assets) {
@@ -55,7 +61,7 @@ async function copyAssets() {
 }
 
 async function runOnce() {
-  await build(baseConfig(classicEntries, 'iife'));
+  cleanStaleBundles();
   await build(baseConfig(moduleEntries, 'esm'));
   await copyAssets();
   console.log('Build complete: dist/ ready');
@@ -63,10 +69,9 @@ async function runOnce() {
 
 try {
   if (watch) {
-    const ctxClassic = context(baseConfig(classicEntries, 'iife'));
     const ctxModule = context(baseConfig(moduleEntries, 'esm'));
-    const [c, m] = await Promise.all([ctxClassic, ctxModule]);
-    await c.watch();
+    const [m] = await Promise.all([ctxModule]);
+    cleanStaleBundles();
     await m.watch();
     await copyAssets();
     console.log('Watching for changes...');

@@ -21,16 +21,15 @@ npm test
 
 Do not hard-code a passing test count in documentation. The current suite is expected to complete with zero failures.
 
-For the encrypted cache, focused verification should establish at minimum:
+For the popup CTA state projection, focused verification should establish at minimum:
 
-- plaintext evidence is not used as the persisted cache representation
-- AES-GCM encryption/decryption round-trip succeeds
-- separate writes use fresh IVs
-- altered authenticated ciphertext or IV fails decryption
-- a cache record bound to the wrong tab/page identity is rejected
-- a stale URL record is rejected
-- malformed cache-write payloads are rejected
-- SNITCH can consume a valid encrypted cached record
+- each lifecycle state enables exactly one primary CTA (or none during copying)
+- `IDLE` enables only SNITCH, `OBSERVING` only CANCEL, `SNITCHSHOT_PENDING` only COPY SNITCHSHOT
+
+For the pre-SNITCH invariant, focused verification should establish at minimum:
+
+- no `extension/content` entry is built and no rolling-cache bridge exists
+- evidence acquisition lives in the trusted background and only runs during a live session
 
 For the DEVPEEPER Chrome-mediated bounded observation, focused verification should establish at minimum:
 
@@ -136,23 +135,16 @@ The report should include:
 
 ---
 
-## Encrypted-cache proof
+## No pre-SNITCH cache proof
 
-The browser-session cache is extension-owned and encrypted before evidence storage.
+There is no rolling evidence cache: nothing samples or stores evidence before an explicit **SNITCH** press.
 
 Verify the following in a development build:
 
-1. Open the test page and generate console/network/runtime evidence.
-2. Wait at least one rolling refresh interval.
-3. Click **SNITCH** and confirm the pre-click evidence appears in the report.
-4. Confirm the extension uses `chrome.storage.session` for the cache and that the evidence record is ciphertext plus required metadata rather than a plaintext `Evidence` object.
-5. Confirm ordinary page JavaScript cannot read the cache or encryption key.
-6. Navigate the tab to a different page and confirm the old per-tab cache record is cleared/rejected.
-7. Close the tab and confirm its per-tab cache record is removed.
-
-The cache key must not appear in page globals, DOM attributes, page messages, report output, or content-script state.
-
-AES-GCM authentication failure should be treated as an unusable cache record, not as valid evidence.
+1. Open the test page and generate console/network/runtime evidence **without** pressing SNITCH.
+2. Confirm no content entry runs and no `chrome.storage` evidence is written on page load or tab activation (there is no `extension/content` in the built output, and inspecting the service worker shows no pre-SNITCH probe/cache calls).
+3. Click **SNITCH** and confirm the report's bounded context (environment/DOM/selection) is acquired fresh for the live session and the console/runtime/network evidence comes from the SNITCH-session observer only.
+4. Confirm no behavior depends on a rolling refresh interval: there is no timer that re-runs the probe or repopulates a cache before SNITCH.
 
 ---
 
@@ -161,10 +153,10 @@ AES-GCM authentication failure should be treated as an unusable cache record, no
 Environment/DOM now comes from a Chrome-mediated bounded probe, not the page.
 
 1. Open the test page and generate DOM/focus evidence.
-2. Wait at least one rolling refresh interval so the probe repopulates the cache.
+2. Click **SNITCH** and let the live session's fresh bounded probe acquire the context.
 3. From page JavaScript, attempt to post a `window.postMessage` claiming a different environment/title/DOM; confirm there is no DEVSnitch `EVIDENCE_RESULT` protocol the page can publish through, and the value is ignored.
-4. Click **SNITCH** and confirm the report's environment/title/DOM match the real page (the Chrome probe) rather than any forged values.
-5. Confirm the bounded probe starts no listeners and the extension executes it through `chrome.scripting.executeScript` (visible in the background/content-script bundle).
+4. Confirm the report's environment/title/DOM match the real page (the Chrome probe) rather than any forged values.
+5. Confirm the bounded probe starts no listeners and the extension executes it through `chrome.scripting.executeScript` from the trusted background (visible in the background bundle).
 
 This proves the bounded return path is Chrome-authenticated, not page-authored.
 
@@ -207,7 +199,7 @@ This proof exercises the live debugger surface for the browser-observed network 
 2. From the page, trigger a failing HTTP request (e.g. fetch a URL that returns `404`/`500`, and force a browser-level failure such as a connection-refused request) and confirm the report's Network section contains those failed requests with method, URL, status (or `0` for a browser-level failure), Chrome monotonic duration, and a bounded response preview.
 3. Confirm successful 2xx/3xx requests do **not** appear in the report.
 4. From page JavaScript, attempt to post a `window.postMessage` whose `network` claims a different set of failed requests, then click **SNITCH**; confirm the report still uses the browser-observed network entries and no page-authored value is treated as evidence.
-5. Confirm the page-context network monkey-patch is gone: the background/content bundle no longer starts `startNetworkCollector`, and ordinary page `fetch`/`XHR` are no longer wrapped (inspect the content-script/background bundle).
+5. Confirm there is no page-context network collector: no content entry is built (so nothing runs in the page/main-world to wrap ordinary page `fetch`/`XHR`), and the background bundle does not start `startNetworkCollector`.
 6. Confirm that if a session produces no network failures, it still completes after the harvest window — the session detaches and the report is produced rather than waiting indefinitely.
 
 This proves failed-network evidence now arrives browser-observed through the SNITCH-session Chromium observer, preserved with provenance, bounded, and cannot be replaced by page-authored messages.
@@ -241,13 +233,13 @@ This regression proof protects the privileged-action boundary between untrusted 
 
 ## Evidence-authenticity limitation
 
-Do **not** use successful encrypted-cache or SNITCH-boundary tests as proof that page evidence itself cannot be forged.
+Do **not** use successful SNITCH-boundary tests as proof that page evidence itself cannot be forged.
 
 Environment, focused DOM and current selection are browser-mediated: acquired through `chrome.scripting.executeScript` and returned in Chrome's `InjectionResult`, so a page calling `window.postMessage` cannot forge those bounded observations. Chrome authenticates the transport path; it does not make the underlying page-controlled DOM/focus state truthful.
 
 Console, runtime-error and network evidence all travel browser-observed through the SNITCH-session Chromium observer; there is no page-facing `window.postMessage` `COLLECT_EVIDENCE`/`EVIDENCE_RESULT` evidence bus, so a page cannot forge or substitute DEVSnitch console/runtime/network evidence through a page-authored evidence protocol. Those observations enter DEVSnitch only through the SNITCH-session Chromium/CDP path. However, the page can still deliberately cause console output, runtime failures, or network activity that Chromium legitimately observes. Browser-observed provenance proves the acquisition path, not the semantic truth or innocence of the page behavior.
 
-The encrypted cache begins protecting evidence only after that acceptance point.
+Evidence only reaches the private DEVSnitcher buffer after user-triggered report finalization.
 
 ---
 
@@ -312,7 +304,7 @@ npm run lint
 npm test
 ```
 
-Then complete manual browser proof in at least one Chromium browser, including encrypted-cache and privileged-action regression checks.
+Then complete manual browser proof in at least one Chromium browser, including the no-pre-SNITCH-cache and privileged-action regression checks.
 
 Recommended release evidence note:
 
@@ -347,7 +339,7 @@ Checks:
 
 ## Evidence First. AI Second.
 
-DEVSnitcher is intentionally standalone: local browser evidence capture, encrypted browser-session cache, one user-triggered SNITCH report, no backend, no telemetry, no AI calls.
+DEVSnitcher is intentionally standalone: local browser evidence capture, one user-triggered SNITCH report held in a private buffer, no pre-SNITCH cache, no backend, no telemetry, no AI calls.
 
 For deeper evidence reconstruction, the same principle continues in **SHERLOCK**: files, conversations, timelines, source artifacts, provenance, and investigation reports.
 

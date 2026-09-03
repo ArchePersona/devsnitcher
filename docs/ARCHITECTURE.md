@@ -5,7 +5,7 @@ DEVSnitcher is built as a small browser extension with a strict local-first evid
 The core path is:
 
 ```text
-DEVPEEPER (bounded probe + Chromium session observer) → Content Bridge → Background → report → Private Buffer
+DEVPEEPER (bounded probe + Chromium session observer) → Background → report → Private Buffer
 User clicks SNITCH → Background attaches session observer → Redaction → Report → Private Buffer → COPY SNITCHSHOT → System clipboard
 ```
 
@@ -53,15 +53,11 @@ DEVSnitcher separates three security concerns.
 
 The background service worker enforces this boundary directly: messages carrying `SNITCH` with a tab sender are refused. Page JavaScript must not be able to initiate `SNITCH`, request screenshot capture, or receive `SNITCH_RESULT` through the page-facing bridge.
 
-The content bridge must not act as a general forwarding path from page-controlled `window.postMessage` traffic into privileged extension APIs.
+There is no content bridge or page-facing forwarding path, so page-controlled `window.postMessage` traffic cannot reach privileged extension APIs.
 
-### Encrypted cache confidentiality and integrity
+### Protecting the private SNITCHSHOT buffer
 
-Accepted evidence is cached only after it reaches the trusted background service worker and passes evidence-shape validation.
-
-Background encrypts cache records with AES-256-GCM before storage. The key remains in trusted extension session storage, cache storage is restricted to `TRUSTED_CONTEXTS`, and each write uses a fresh random IV. Authenticated additional data binds the ciphertext to its tab cache identity.
-
-The page does not receive the cache key or decrypted cache contents. Malformed cache-write payloads are rejected, authenticated tampering causes decryption failure, and decrypted payloads are shape-validated before use.
+The finalized report is held in background-owned memory as the outstanding SNITCHSHOT (occupied) until an explicit **COPY SNITCHSHOT** writes it to the system clipboard and that write is confirmed (`CLIPBOARD_RELEASED`/`CLIPBOARD_CLEARED`). A second SNITCH is refused while the buffer is occupied, and a failed clipboard write retains the buffer. The report is not written to `chrome.storage` and is not a rolling, continuously-refreshed cache — it only exists after the completion of a live session that was explicitly started by pressing **SNITCH**.
 
 ### Page-evidence authenticity
 
@@ -87,13 +83,19 @@ The popup is the user interface.
 Responsibilities:
 
 - Show the DEVSnitcher brand
-- Provide one dominant **SNITCH** action
+- Render the three primary CTAs — **SNITCH**, **CANCEL**, **COPY SNITCHSHOT** — at all times
 - Accept optional user notes
 - Toggle optional screenshot capture
 - Display success or error state
-- Provide one dominant **SNITCH** action, replaced by **CANCEL** while observing and **COPY SNITCHSHOT** when a report is pending
 - Poll `GET_STATUS` while observing to reflect session state
-- Write the pending report to the system clipboard and confirm, then notify background
+- Write the pending report to the system clipboard synchronously and confirm, then notify background
+
+All three primary CTAs stay rendered. One deterministic render projection (`ctaConfig`) maps the background-authoritative state (`IDLE` / `OBSERVING` / `SNITCHSHOT_PENDING`) plus a popup-local `COPYING` transition onto `disabled`, a contextual label, and input availability, so the popup never presents contradictory active actions at the same time:
+
+- `IDLE` → only **SNITCH** enabled
+- `OBSERVING` → only **CANCEL** enabled
+- `SNITCHSHOT_PENDING` → only **COPY SNITCHSHOT** enabled
+- `COPYING` (local) → nothing enabled; **COPY** shows progress
 
 The popup should stay simple.
 
@@ -101,7 +103,7 @@ The popup should stay simple.
 
 ### Background service worker
 
-The background service worker owns privileged coordination and the encrypted cache boundary.
+The background service worker owns privileged coordination of the authoritative SNITCH lifecycle.
 
 Responsibilities:
 
@@ -137,50 +139,6 @@ Only one DEVPEEPER observer exists at a time, and only during a live SNITCH sess
 The `debugger` permission is intentionally required for browser-observed provenance: DEVPEEPER uses Chromium instrumentation so observation authority comes from the browser boundary rather than page-authored JavaScript messages.
 
 Chromium identifiers are provenance, not durable source identity. DEVPEEPER does not implement a `SourceIdentity` object and does not create per-navigation source rollover; the SNITCH session attachment is the effective observation source. Network evidence is now browser-observed alongside console and runtime errors.
-
----
-
-### Content bridge
-
-The content bridge runs in the isolated extension world.
-
-Responsibilities:
-
-- Respond to PING/PONG checks
-- Resolve its host tab id through the background
-- Execute the DEVPEEPER bounded probe through `chrome.scripting.executeScript` and normalize its result into the evidence snapshot
-- Assemble environment/DOM from the Chrome-mediated probe; console/jsErrors/network are left to the background's browser-observed Chromium session
-- Prevent overlapping rolling-cache refreshes
-- Send accepted evidence to background with `CACHE_EVIDENCE`
-- Receive explicit `REFRESH_CACHE` fallback requests from background
-
-The content bridge does not hold the encryption/decryption key and must not accept page-originated `SNITCH` commands or forward page-controlled requests into privileged extension behavior.
-
----
-
-### Encrypted evidence cache
-
-The rolling cache is browser-session-scoped and extension-owned.
-
-Current properties:
-
-- `chrome.storage.session`
-- access restricted to `TRUSTED_CONTEXTS`
-- AES-256-GCM authenticated encryption
-- fresh 12-byte random IV per encryption
-- tab-bound authenticated additional data
-- per-tab cache records
-- evidence-shape validation before storage and after decryption
-- malformed cache writes rejected
-- stale URL mismatch rejected
-- per-tab record removed when the tab closes
-- per-tab record cleared when the tab navigates or begins loading a new page
-- rolling refresh approximately every two seconds
-- SNITCH prefers a valid existing cache and refreshes only as fallback
-
-Only ciphertext and the metadata needed to validate/decrypt it are stored as the evidence record. Plaintext evidence is not intentionally persisted to extension storage.
-
-The cache is not an evidence-provenance system. It protects evidence after acceptance by the extension.
 
 ---
 
@@ -237,7 +195,7 @@ Current redaction areas:
 - Tokens
 - URLs
 
-Redaction happens after cache decryption and before report output.
+Redaction happens on the completed report in the trusted background, before the report is placed in the private SNITCHSHOT buffer.
 
 Redaction is best effort, not a guarantee.
 
@@ -271,20 +229,10 @@ GET_SNITCHSHOT
 SNITCHSHOT_CONTENT
 CLIPBOARD_RELEASED
 CLIPBOARD_CLEARED
-CACHE_EVIDENCE
-CACHE_STORED
-REFRESH_CACHE
-CACHE_REFRESHED
-PING
-PONG
-GET_TAB_ID
-TAB_ID
 EVIDENCE_ERROR
-GET_BOUNDED_OBSERVATION
-BOUNDED_OBSERVATION
 ```
 
-The popup-only session messages are `SNITCH`, `GET_STATUS`, `CANCEL_SNITCH`, `GET_SNITCHSHOT` and `CLIPBOARD_RELEASED`; each is refused when relayed from a tab. Cache messages (`CACHE_EVIDENCE`/`CACHE_STORED`/`REFRESH_CACHE`/`CACHE_REFRESHED`) belong to the content-bridge rolling-cache path. `GET_TAB_ID`/`TAB_ID` and `GET_BOUNDED_OBSERVATION`/`BOUNDED_OBSERVATION` are extension-internal orchestration between the content bridge and background. The legacy `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` page-evidence protocol and the `PASTE_SNITCHSHOT` owned-paste protocol have been removed.
+The popup-only session messages are `SNITCH`, `GET_STATUS`, `CANCEL_SNITCH`, `GET_SNITCHSHOT` and `CLIPBOARD_RELEASED`; each is refused when relayed from a tab. There is no content bridge or rolling evidence cache, so there are no `CACHE_*` / `GET_TAB_ID` / `GET_BOUNDED_OBSERVATION` / `PING` / `PONG` messages. The legacy `COLLECT_EVIDENCE` / `EVIDENCE_RESULT` page-evidence protocol, the `PASTE_SNITCHSHOT` owned-paste protocol, and the content-bridge rolling-cache protocol have been removed.
 
 ---
 
@@ -325,16 +273,11 @@ Those may be separate products later. They do not belong in the core v2.x extens
 ## Stability rules
 
 1. Do not allow page-controlled or tab-relayed messages to invoke privileged extension actions.
-2. Validate evidence before accepting a cache write.
-3. Encrypt accepted cached evidence before storage.
-4. Keep cache keys and decrypted cache contents out of page context.
-5. Keep cache records isolated by tab/page identity and clear them on tab close/navigation.
-6. Do not describe encrypted caching as proof of page-evidence provenance.
-7. Guard against double-injection and overlapping refreshes.
-8. Keep report output deterministic.
-9. Keep redaction pure and testable.
-10. Keep acquisition modules small.
-11. Keep the popup simple.
+2. Nothing observes before SNITCH: extension start, tab activation, navigation and popup-open never attach the debugger, run a probe, or collect evidence.
+3. Keep report output deterministic.
+4. Keep redaction pure and testable.
+5. Keep acquisition modules small.
+6. Keep the popup simple. The popup renders all three CTAs and derives their enabled/labelled state from a single lifecycle projection — never from divergent UI bits.
 
 ---
 
@@ -364,7 +307,7 @@ https://sherlock-xprize.web.app
 
 ## Evidence First. AI Second.
 
-DEVSnitcher is intentionally standalone: local browser evidence capture, encrypted browser-session cache, user-triggered SNITCH report, no backend, no telemetry, no AI calls.
+DEVSnitcher is intentionally standalone: local browser evidence capture, one user-triggered SNITCH report held in a private buffer, no backend, no telemetry, no AI calls, and no rolling pre-SNITCH cache.
 
 For deeper evidence reconstruction, the same principle continues in **SHERLOCK**: files, conversations, timelines, source artifacts, provenance, and investigation reports.
 

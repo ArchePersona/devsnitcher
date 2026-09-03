@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { JSDOM } from 'jsdom';
 
@@ -77,12 +77,7 @@ import {
 import { buildMarkdownReport } from '../report/markdown';
 import { buildJsonReport } from '../report/json';
 import { writeToClipboard, writeTextViaDomCopy } from '../report/clipboard';
-import {
-  EvidenceCache,
-  cacheRecordKey,
-  isEvidenceShape,
-  type SessionStorageLike,
-} from '../extension/background/cache';
+import { ctaConfig } from '../extension/popup/cta-config';
 import { SnitchshotBuffer, SNITCHSHOT_BUFFER_KEY } from '../extension/background/snitchshot-buffer';
 import type { SnitchshotStorageLike } from '../extension/background/snitchshot-buffer';
 import { SnitchSessionManager, HARVEST_WINDOW_MS } from '../extension/background/snitch-session';
@@ -485,164 +480,6 @@ describe('report builder', () => {
   });
 });
 
-describe('encrypted evidence cache', () => {
-  const SECRET_MARKER = 'secret-token-abc123';
-  const PAGE_URL = 'https://example.com/test-page';
-
-  function makeEvidence(url = PAGE_URL): Evidence {
-    return {
-      environment: {
-        url,
-        title: 'TestPage',
-        browser: 'TestBrowser',
-        platform: 'test',
-        viewport: { width: 1280, height: 720 },
-        timestamp: 1234567890,
-      },
-      console: [{ level: 'error', message: `boom ${SECRET_MARKER}`, timestamp: 1 }],
-      network: [],
-      jsErrors: [],
-      dom: null,
-      screenshot: null,
-    };
-  }
-
-  async function makeCache() {
-    const key = await crypto.subtle.generateKey(
-      { name: 'AES-GCM', length: 256 },
-      true,
-      ['encrypt', 'decrypt'],
-    );
-    const dump = new Map<string, unknown>();
-    const storage: SessionStorageLike = {
-      get: async (name) => (dump.has(name) ? { [name]: dump.get(name) } : {}),
-      set: async (items) => {
-        for (const [k, v] of Object.entries(items)) dump.set(k, v);
-      },
-      remove: async (name) => {
-        dump.delete(name);
-      },
-    };
-    return { dump, cache: new EvidenceCache(storage, () => Promise.resolve(key)) };
-  }
-
-  test('round-trip: SNITCH can consume a valid encrypted cached record', async () => {
-    const { cache } = await makeCache();
-    const original = makeEvidence();
-
-    await cache.store(1, PAGE_URL, original);
-    const loaded = await cache.load(1, PAGE_URL);
-
-    assert.equal(loaded.environment.url, original.environment.url);
-    assert.equal(loaded.environment.title, original.environment.title);
-    assert.deepEqual(loaded.console, original.console);
-  });
-
-  test('stored cache representation is ciphertext, not plaintext evidence', async () => {
-    const { dump, cache } = await makeCache();
-
-    await cache.store(1, PAGE_URL, makeEvidence());
-
-    const record = dump.get(cacheRecordKey(1)) as Record<string, unknown>;
-    assert.equal(record.version, 1);
-    assert.equal(record.url, PAGE_URL);
-    assert.equal(typeof record.capturedAt, 'number');
-    assert.equal(typeof record.iv, 'string');
-    assert.equal(typeof record.ciphertext, 'string');
-
-    const serialized = JSON.stringify(record);
-    assert.ok(!serialized.includes(SECRET_MARKER));
-    assert.ok(!serialized.includes('"environment"'));
-    assert.ok(!serialized.includes('TestPage'));
-  });
-
-  test('each cache write uses a fresh random IV', async () => {
-    const { dump, cache } = await makeCache();
-
-    await cache.store(1, PAGE_URL, makeEvidence());
-    const firstIv = (dump.get(cacheRecordKey(1)) as Record<string, unknown>).iv;
-    await cache.store(1, PAGE_URL, makeEvidence());
-    const secondIv = (dump.get(cacheRecordKey(1)) as Record<string, unknown>).iv;
-
-    assert.notEqual(firstIv, secondIv);
-  });
-
-  test('altered ciphertext fails authentication', async () => {
-    const { dump, cache } = await makeCache();
-
-    await cache.store(1, PAGE_URL, makeEvidence());
-    const record = dump.get(cacheRecordKey(1)) as Record<string, unknown>;
-    const bytes = atob(record.ciphertext as string);
-    record.ciphertext = btoa(String.fromCharCode(bytes.charCodeAt(0) ^ 0x01) + bytes.slice(1));
-
-    await assert.rejects(() => cache.load(1, PAGE_URL));
-  });
-
-  test('altered IV fails authentication', async () => {
-    const { dump, cache } = await makeCache();
-
-    await cache.store(1, PAGE_URL, makeEvidence());
-    const record = dump.get(cacheRecordKey(1)) as Record<string, unknown>;
-    const ivBytes = atob(record.iv as string);
-    record.iv = btoa(String.fromCharCode(ivBytes.charCodeAt(0) ^ 0x01) + ivBytes.slice(1));
-
-    await assert.rejects(() => cache.load(1, PAGE_URL));
-  });
-
-  test('a record bound to one tab cannot be accepted for another tab', async () => {
-    const { dump, cache } = await makeCache();
-
-    await cache.store(1, PAGE_URL, makeEvidence());
-
-    // Copy tab 1's record verbatim into tab 2's storage slot.
-    dump.set(cacheRecordKey(2), dump.get(cacheRecordKey(1)));
-
-    await assert.rejects(() => cache.load(2, PAGE_URL));
-    assert.ok(await cache.load(1, PAGE_URL));
-  });
-
-  test('cached evidence for a stale page URL is not used', async () => {
-    const stale = await makeCache();
-    await stale.cache.store(1, 'https://example.com/page-a', makeEvidence('https://example.com/page-a'));
-    await assert.rejects(() => stale.cache.load(1, 'https://example.com/page-b'));
-    assert.equal(stale.dump.has(cacheRecordKey(1)), false);
-
-    const fresh = await makeCache();
-    await fresh.cache.store(1, 'https://example.com/page-a', makeEvidence('https://example.com/page-a'));
-    assert.ok(await fresh.cache.load(1, 'https://example.com/page-a'));
-  });
-
-  test('malformed cache-write payloads are rejected, not coerced', async () => {
-    const { cache } = await makeCache();
-
-    assert.equal(isEvidenceShape(null), false);
-    assert.equal(isEvidenceShape('evidence'), false);
-    assert.equal(isEvidenceShape({}), false);
-    assert.equal(isEvidenceShape({ environment: { url: 'x', title: 't', timestamp: 1 } }), false);
-    assert.equal(
-      isEvidenceShape({
-        environment: { url: 'x', title: 't', timestamp: 1 },
-        console: 'not-an-array',
-        network: [],
-        jsErrors: [],
-        dom: null,
-        screenshot: null,
-      }),
-      false,
-    );
-
-    await assert.rejects(() => cache.store(1, PAGE_URL, 'not evidence' as unknown as Evidence));
-    await assert.rejects(() => cache.store(1, PAGE_URL, {} as unknown as Evidence));
-    await assert.rejects(() => cache.load(1, PAGE_URL));
-  });
-
-  test('loading with no cache record fails cleanly', async () => {
-    const { cache } = await makeCache();
-
-    await assert.rejects(() => cache.load(42, PAGE_URL));
-  });
-});
-
 describe('DEVPEEPER Chrome-mediated bounded observation', () => {
   test('bounded probe returns plain serializable data without a postMessage transport', () => {
     const source = snapshotProbe.toString();
@@ -713,22 +550,21 @@ describe('DEVPEEPER Chrome-mediated bounded observation', () => {
     assert.equal(observation.provenance.worldId, undefined);
   });
 
-  test('bounded probe executes in the trusted background, not the content bundle', () => {
-    // chrome.scripting is not available to content-script contexts: it is
-    // undefined there, so a content script calling chrome.scripting.executeScript
-    // throws "Cannot read properties of undefined (reading 'executeScript')".
-    // The DEVPEEPER bounded probe must therefore be run from the background
-    // service worker. Guard that the content bridge never references the API.
+  test('bounded probe executes only in the trusted background; no pre-SNITCH content bundle', () => {
+    // chrome.scripting is not available to content-script contexts, so the
+    // DEVPEEPER bounded probe must run from the background service worker. The
+    // pre-SNITCH rolling-cache content bundle has been removed entirely: there
+    // must be no extension/content script that collects evidence before SNITCH,
+    // and only the background may own chrome.scripting execution.
     const root = process.cwd();
-    const contentSource = readFileSync(join(root, 'extension', 'content', 'index.ts'), 'utf8');
+    assert.equal(
+      existsSync(join(root, 'extension', 'content')),
+      false,
+      'no content bridge / rolling-cache script may pre-empt SNITCH',
+    );
     const backgroundSource = readFileSync(
       join(root, 'extension', 'background', 'index.ts'),
       'utf8',
-    );
-
-    assert.ok(
-      !contentSource.includes('chrome.scripting.executeScript'),
-      'content bridge must not call chrome.scripting (unavailable in content scripts)',
     );
     assert.ok(
       backgroundSource.includes('chrome.scripting'),
@@ -2074,6 +1910,61 @@ describe('SNITCHSHOT clipboard writer', () => {
       );
     } finally {
       restoreExec();
+    }
+  });
+});
+
+describe('popup CTA state render projection', () => {
+  test('IDLE → only SNITCH enabled; no action is self-contradictory', () => {
+    const cfg = ctaConfig('idle');
+    assert.equal(cfg.snitchEnabled, true);
+    assert.equal(cfg.cancelEnabled, false);
+    assert.equal(cfg.copyEnabled, false);
+    assert.equal(cfg.inputsEnabled, true);
+    assert.equal(cfg.snitchLabel, 'Ready');
+    assert.equal(cfg.cancelLabel, 'Not observing');
+    assert.equal(cfg.copyLabel, 'No report');
+  });
+
+  test('OBSERVING → only CANCEL enabled; inputs disabled', () => {
+    const cfg = ctaConfig('observing');
+    assert.equal(cfg.snitchEnabled, false);
+    assert.equal(cfg.cancelEnabled, true);
+    assert.equal(cfg.copyEnabled, false);
+    assert.equal(cfg.inputsEnabled, false);
+    assert.equal(cfg.snitchLabel, 'Watching…');
+    assert.equal(cfg.cancelLabel, 'Stop observing');
+    assert.equal(cfg.copyLabel, 'Not ready');
+  });
+
+  test('SNITCHSHOT_PENDING → only COPY SNITCHSHOT enabled', () => {
+    const cfg = ctaConfig('snitchshot_pending');
+    assert.equal(cfg.snitchEnabled, false);
+    assert.equal(cfg.cancelEnabled, false);
+    assert.equal(cfg.copyEnabled, true, 'a pending report must make COPY actionable');
+    assert.equal(cfg.inputsEnabled, false);
+    assert.equal(cfg.snitchLabel, 'Report pending');
+    assert.equal(cfg.cancelLabel, 'Not observing');
+    assert.equal(cfg.copyLabel, 'Send report to clipboard');
+  });
+
+  test('COPYING (local transition) → nothing actionable; COPY shows progress', () => {
+    const cfg = ctaConfig('copying');
+    assert.equal(cfg.snitchEnabled, false);
+    assert.equal(cfg.cancelEnabled, false);
+    assert.equal(cfg.copyEnabled, false, 'double invocation must be prevented during copy');
+    assert.equal(cfg.inputsEnabled, false);
+    assert.equal(cfg.copyLabel, 'Copying…');
+  });
+
+  test('every state yields exactly one enabled primary CTA (or none during COPYING)', () => {
+    for (const state of ['idle', 'observing', 'snitchshot_pending', 'copying'] as const) {
+      const cfg = ctaConfig(state);
+      const enabled = [cfg.snitchEnabled, cfg.cancelEnabled, cfg.copyEnabled].filter(
+        Boolean,
+      ).length;
+      const expected = state === 'copying' ? 0 : 1;
+      assert.equal(enabled, expected, `state ${state} must enable exactly ${expected} CTA`);
     }
   });
 });

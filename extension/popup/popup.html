@@ -30,17 +30,17 @@
 
       <button id="snitch" class="snitch" type="button">
         <span class="snitch-label">SNITCH</span>
-        <span class="snitch-state" id="state">Ready</span>
+        <span class="snitch-state" id="snitch-state">Ready</span>
       </button>
 
-      <button id="cancel" class="snitch cancel" type="button" hidden>
+      <button id="cancel" class="snitch cancel" type="button" disabled>
         <span class="snitch-label">CANCEL</span>
-        <span class="snitch-state">Watching the selected tab</span>
+        <span class="snitch-state" id="cancel-state">Not observing</span>
       </button>
 
-      <button id="copy" class="snitch copy" type="button" hidden>
+      <button id="copy" class="snitch copy" type="button" disabled>
         <span class="snitch-label">COPY SNITCHSHOT</span>
-        <span class="snitch-state">Send report to clipboard</span>
+        <span class="snitch-state" id="copy-state">No report</span>
       </button>
 
       <p id="result" class="result" role="status" aria-live="polite"></p>

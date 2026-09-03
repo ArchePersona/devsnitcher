@@ -146,7 +146,6 @@ devpeeper/
 redaction/
 report/
 extension/background/
-extension/content/
 extension/popup/
 shared/
 ```

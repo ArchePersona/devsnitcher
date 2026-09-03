@@ -71,20 +71,6 @@ export type SnitchUiState = 'idle' | 'observing' | 'snitchshot_pending';
 
 export type SnitchMessage =
   | { type: 'EVIDENCE_ERROR'; error: string }
-  | { type: 'CACHE_EVIDENCE'; evidence: Evidence }
-  | { type: 'CACHE_STORED' }
-  | { type: 'REFRESH_CACHE' }
-  | { type: 'CACHE_REFRESHED' }
-  | { type: 'GET_TAB_ID' }
-  | { type: 'TAB_ID'; tabId: number }
-  | { type: 'GET_BOUNDED_OBSERVATION' }
-  | {
-      type: 'BOUNDED_OBSERVATION';
-      environment: EnvironmentInfo;
-      dom: DomContext | null;
-    }
-  | { type: 'PING' }
-  | { type: 'PONG' }
   | { type: 'SNITCH'; userNotes: string; screenshot: boolean }
   | { type: 'SNITCH_ACCEPTED'; tabId: number; windowId?: number }
   | { type: 'SNITCH_ERROR'; error: string }

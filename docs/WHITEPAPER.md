@@ -217,18 +217,13 @@ Popup
 
 Background service worker
   └─ Finds active tab
-  └─ Ensures content script is available
   └─ Attaches active-tab Chromium observer (Page, Runtime, Network)
   └─ Observes console, runtime errors and failed network browser-observed
-  └─ Assembles and encrypts evidence; redacts; builds final report
-
-Content bridge
-  └─ Runs in the isolated extension world
   └─ Executes the Chrome-mediated bounded probe (environment/DOM/selection)
-  └─ Streams accepted evidence to the background
+  └─ Assembles evidence; redacts; builds final report
 
 DEVPEEPER
-  └─ Bounded probe (chrome-scripting): environment, DOM, selection
+  └─ Bounded probe (chrome-scripting from background): environment, DOM, selection
   └─ Chromium observer (chrome-debugger): console, runtime errors, network
   └─ Optional user-requested screenshot
 
@@ -241,7 +236,7 @@ Redaction
 Report
   └─ Markdown report (primary product format)
   └─ JSON report
-  └─ Held in a private DEVSnitcher buffer and inserted via PASTE SNITCHSHOT
+  └─ Held in a private DEVSnitcher buffer and released via COPY SNITCHSHOT
 ```
 
 ## Project Layout
@@ -253,7 +248,6 @@ report/            Markdown and JSON report builders
 shared/            Shared TypeScript types
 extension/         Browser extension source
   background/      Service worker and evidence coordinator
-  content/         Content bridge (Chrome-mediated probe execution)
   popup/           SNITCH button UI
 scripts/           Build and test scripts
 tests/             Unit tests

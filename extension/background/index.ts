@@ -1,7 +1,6 @@
 import { redactEvidence } from '../../redaction/index';
 import { buildMarkdownReport } from '../../report/markdown';
 import { captureScreenshot } from '../../collectors/screenshot';
-import { EvidenceCache, base64ToBytes, bytesToBase64, isEvidenceShape } from './cache';
 import { SnitchshotBuffer } from './snitchshot-buffer';
 import { SnitchSessionManager, type SnitchSessionContext } from './snitch-session';
 import { chromeDebuggerTransport } from '../../devpeeper/debugger-transport';
@@ -11,8 +10,6 @@ import {
   type InjectionResultLike,
 } from '../../devpeeper/observation';
 import type { DomContext, EnvironmentInfo, SnitchMessage, SnitchUiState } from '../../shared/types';
-
-const CACHE_KEY_STORAGE = 'devsnitcher:evidence-cache-key:v1';
 
 // Bounded SNITCH session. DEVPEEPER attaches a debugger ONLY while a
 // user-initiated SNITCH session is live. There is no automatic active-tab
@@ -43,19 +40,6 @@ chrome.storage.session
     // The default access level (trusted contexts only) already applies.
   });
 
-const cache = new EvidenceCache(
-  {
-    get: async (key) => chrome.storage.session.get(key),
-    set: async (items) => {
-      await chrome.storage.session.set(items);
-    },
-    remove: async (key) => {
-      await chrome.storage.session.remove(key);
-    },
-  },
-  getOrCreateCacheKey,
-);
-
 // Private DEVSnitcher-owned SNITCHSHOT buffer. Global, session-scoped, restricted
 // to trusted contexts. It is the authoritative store for the clipboard release
 // lifecycle and is cleared only after a confirmed system clipboard write, never
@@ -71,107 +55,13 @@ const snitchshot = new SnitchshotBuffer({
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  void cache.clear(tabId);
   // A closed source tab terminates its SNITCH session; it never migrates to
-  // another tab.
+  // another tab. Nothing is attached or observed before SNITCH.
   void session.handleRemoved(tabId);
-});
-
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.url || changeInfo.status === 'loading') {
-    void cache.clear(tabId);
-  }
 });
 
 chrome.runtime.onMessage.addListener(
   (msg: SnitchMessage, sender, sendResponse) => {
-    if (msg?.type === 'CACHE_EVIDENCE') {
-      if (sender.id !== chrome.runtime.id || sender.tab?.id == null || !sender.tab.url) {
-        sendResponse({
-          type: 'EVIDENCE_ERROR',
-          error: 'Rejected evidence cache write from untrusted sender',
-        } satisfies SnitchMessage);
-        return false;
-      }
-
-      if (!isEvidenceShape(msg.evidence)) {
-        // Reject malformed cache-write messages instead of coercing them into valid data.
-        sendResponse({
-          type: 'EVIDENCE_ERROR',
-          error: 'Rejected malformed evidence cache write',
-        } satisfies SnitchMessage);
-        return false;
-      }
-
-      cache
-        .store(sender.tab.id, sender.tab.url, msg.evidence)
-        .then(() => sendResponse({ type: 'CACHE_STORED' } satisfies SnitchMessage))
-        .catch((err) =>
-          sendResponse({
-            type: 'EVIDENCE_ERROR',
-            error: String(err),
-          } satisfies SnitchMessage),
-        );
-      return true;
-    }
-
-    if (msg?.type === 'GET_TAB_ID') {
-      // Content scripts resolve their host tab id through the background, which
-      // sees the sender's tab context. Used to target the DEVPEEPER bounded probe.
-      if (sender.tab?.id != null) {
-        sendResponse({ type: 'TAB_ID', tabId: sender.tab.id } satisfies SnitchMessage);
-      } else {
-        sendResponse({
-          type: 'EVIDENCE_ERROR',
-          error: 'Rejected: no tab context for tab id resolution.',
-        } satisfies SnitchMessage);
-      }
-      return false;
-    }
-
-    if (msg?.type === 'GET_BOUNDED_OBSERVATION') {
-      // The DEVPEEPER bounded probe must run chrome.scripting.executeScript from
-      // a trusted extension context: chrome.scripting is unavailable to content
-      // scripts (it is undefined there). The content bridge therefore requests
-      // the observation here, and this background handler targets its own tab.
-      const tabId = sender.tab?.id;
-      if (tabId == null) {
-        sendResponse({
-          type: 'EVIDENCE_ERROR',
-          error: 'Rejected: no tab context for bounded observation.',
-        } satisfies SnitchMessage);
-        return false;
-      }
-
-      chrome.scripting
-        .executeScript<[], BoundedSnapshot>({
-          target: { tabId },
-          world: 'ISOLATED',
-          func: snapshotProbe,
-        })
-        .then((results) => {
-          const result = results[0] as
-            | (InjectionResultLike & { result?: BoundedSnapshot })
-            | undefined;
-          if (!result || !result.result) {
-            throw new Error('DEVPEEPER bounded probe returned no result');
-          }
-          const observation = makeBoundedObservation(result.result, result, tabId, Date.now());
-          sendResponse({
-            type: 'BOUNDED_OBSERVATION',
-            environment: observation.payload.environment,
-            dom: observation.payload.dom,
-          } satisfies SnitchMessage);
-        })
-        .catch((err) =>
-          sendResponse({
-            type: 'EVIDENCE_ERROR',
-            error: String(err),
-          } satisfies SnitchMessage),
-        );
-      return true;
-    }
-
     if (msg?.type === 'GET_STATUS') {
       // Popup derives its interactive state from authoritative background/session
       // state. Refuse tab-relayed senders so page/content scripts cannot probe it.
@@ -413,31 +303,4 @@ async function probeBoundedObservation(tabId: number): Promise<{
   }
   const observation = makeBoundedObservation(result.result, result, tabId, Date.now());
   return observation.payload;
-}
-
-async function getOrCreateCacheKey(): Promise<CryptoKey> {
-  const stored = await chrome.storage.session.get(CACHE_KEY_STORAGE);
-  const encoded = stored[CACHE_KEY_STORAGE];
-
-  if (typeof encoded === 'string' && encoded.length > 0) {
-    return crypto.subtle.importKey(
-      'raw',
-      base64ToBytes(encoded),
-      { name: 'AES-GCM' },
-      false,
-      ['encrypt', 'decrypt'],
-    );
-  }
-
-  const key = await crypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt'],
-  );
-  const raw = await crypto.subtle.exportKey('raw', key);
-  await chrome.storage.session.set({
-    [CACHE_KEY_STORAGE]: bytesToBase64(new Uint8Array(raw)),
-  });
-
-  return key;
 }

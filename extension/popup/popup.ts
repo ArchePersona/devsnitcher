@@ -1,6 +1,6 @@
-import type { SnitchMessage, SnitchUiState } from '../../shared/types';
-import { writeTextViaDomCopy } from '../../report/clipboard';
-import { fingerprint } from '../../report/clipboard';
+import type { SnitchMessage } from '../../shared/types';
+import { writeTextViaDomCopy, fingerprint } from '../../report/clipboard';
+import { ctaConfig, type PopupCtaState } from './cta-config';
 
 const STATUS_POLL_MS = 500;
 
@@ -17,80 +17,91 @@ document.addEventListener('DOMContentLoaded', () => {
   const copyBtn = document.getElementById('copy') as HTMLButtonElement;
   const notes = document.getElementById('notes') as HTMLTextAreaElement;
   const screenshotCb = document.getElementById('screenshot') as HTMLInputElement;
-  const field = document.querySelector('.field') as HTMLElement;
-  const screenshotRow = document.querySelector('.checkbox') as HTMLElement;
-  const stateEl = document.getElementById('state') as HTMLSpanElement;
+  const field = document.querySelector('.field') as HTMLElement | null;
+  const screenshotRow = document.querySelector('.checkbox') as HTMLElement | null;
+  const snitchStateEl = document.getElementById('snitch-state') as HTMLSpanElement;
+  const cancelStateEl = document.getElementById('cancel-state') as HTMLSpanElement;
+  const copyStateEl = document.getElementById('copy-state') as HTMLSpanElement;
   const resultEl = document.getElementById('result') as HTMLParagraphElement;
 
   let pollTimer: number | null = null;
-  let observedPending = false;
+  // The authoritative lifecycle (background states + the popup-local COPYING).
+  let currentState: PopupCtaState = 'idle';
 
   async function send(msg: SnitchMessage): Promise<SnitchMessage | undefined> {
     return (await chrome.runtime.sendMessage(msg)) as SnitchMessage | undefined;
   }
 
-  function render(state: SnitchUiState): void {
-    const observing = state === 'observing';
-    const pending = state === 'snitchshot_pending';
-    const idle = state === 'idle';
+  /**
+   * The single deterministic projection of the lifecycle onto the three CTAs.
+   * All three remain rendered; the state decides which is enabled and what each
+   * contextual label says. This is the only place CTA configuration is derived,
+   * so the popup can never present contradictory active actions.
+   */
+  function render(state: PopupCtaState): void {
+    currentState = state;
+    const cfg = ctaConfig(state);
 
-    snitchBtn.hidden = !idle;
-    cancelBtn.hidden = !observing;
-    copyBtn.hidden = !pending;
+    snitchBtn.disabled = !cfg.snitchEnabled;
+    cancelBtn.disabled = !cfg.cancelEnabled;
+    copyBtn.disabled = !cfg.copyEnabled;
 
-    // The capture inputs are only meaningful while idle (choosing a snapshot).
-    if (field) field.hidden = !idle;
-    if (screenshotRow) screenshotRow.hidden = !idle;
+    snitchStateEl.textContent = cfg.snitchLabel;
+    cancelStateEl.textContent = cfg.cancelLabel;
+    copyStateEl.textContent = cfg.copyLabel;
 
-    if (observing) {
-      stateEl.textContent = 'Watching…';
+    if (field) field.hidden = !cfg.inputsEnabled;
+    if (screenshotRow) screenshotRow.hidden = !cfg.inputsEnabled;
+    notes.disabled = !cfg.inputsEnabled;
+    screenshotCb.disabled = !cfg.inputsEnabled;
+
+    // Drive the helper message from the same projection; no divergent UI bits.
+    if (state === 'observing') {
       resultEl.textContent = 'Collecting browser evidence on the selected tab…';
       resultEl.className = 'result';
-    } else if (pending) {
-      stateEl.textContent = '';
+    } else if (state === 'snitchshot_pending') {
       resultEl.textContent = 'SNITCHSHOT ready. Copy it, then Ctrl+V anywhere.';
       resultEl.className = 'result';
+    } else if (state === 'copying') {
+      // copy button sub-label shows "Copying…"; keep a neutral helper line.
+      resultEl.textContent = '';
+      resultEl.className = 'result';
     } else {
-      stateEl.textContent = 'Ready';
       resultEl.textContent = '';
       resultEl.className = 'result';
     }
   }
 
   async function refreshStatus(fromPoll = false): Promise<void> {
+    // Ignore a stale poll if a local COPYING transition is in progress — the
+    // background, which may not know about COPYING yet, must not clobber it.
+    if (currentState === 'copying') return;
+
     const response = await send({ type: 'GET_STATUS' } satisfies SnitchMessage);
     if (!response) return;
 
     if (response.type === 'STATUS_RESULT') {
       render(response.state);
       if (response.state === 'observing') {
-        if (!observedPending) {
-          observedPending = true;
-          resultEl.textContent =
-            'Collecting browser evidence on the selected tab…';
-        }
         schedulePoll();
       } else if (response.state === 'snitchshot_pending') {
         stopPoll();
-        // Pre-fetch the report into popup memory before the user gestures, so
-        // the COPY click can run execCommand('copy') synchronously within the
-        // activation window (awaiting GET_SNITCHSHOT mid-gesture forfeits it).
+        // Pre-fetch the report ahead of the gesture so the COPY click can run
+        // execCommand('copy') synchronously within the activation window
+        // (awaiting GET_SNITCHSHOT mid-gesture forfeits it).
         void fetchReportForCache();
-        if (observedPending) {
-          observedPending = false;
-          stateEl.textContent = 'Done ✓';
-          resultEl.textContent = 'Report ready. Press COPY SNITCHSHOT.';
-          resultEl.className = 'result ok';
-        }
-      } else if (fromPoll) {
-        // Returned to idle by the backend (e.g. session completed while we were
-        // polling) without a fresh user action.
+      } else {
+        // idle (or unknown): stop polling and drop any stale cached report.
         stopPoll();
-        observedPending = false;
+        cachedReport = null;
+        if (fromPoll) {
+          resultEl.textContent = '';
+          resultEl.className = 'result';
+        }
       }
     } else if (response.type === 'EVIDENCE_ERROR') {
       stopPoll();
-      observedPending = false;
+      cachedReport = null;
       render('idle');
       resultEl.textContent = response.error;
       resultEl.className = 'result err';
@@ -110,7 +121,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function showError(message: string): void {
-    stateEl.textContent = 'Error';
     resultEl.textContent = message;
     resultEl.className = 'result err';
   }
@@ -120,7 +130,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Fetch the pending report into popup memory. Runs off the gesture path (from
-  // status polling / initial render) so the COPY click below never awaits a
+  // status polling / initial render) so the COPY click never awaits a
   // cross-process message before performing the synchronous OS clipboard write.
   async function fetchReportForCache(): Promise<void> {
     try {
@@ -136,8 +146,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   snitchBtn.addEventListener('click', async () => {
     snitchBtn.disabled = true;
-    stateEl.textContent = 'Starting…';
-    resultEl.textContent = '';
+    resultEl.textContent = 'Starting…';
     resultEl.className = 'result';
 
     try {
@@ -151,13 +160,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (response.type === 'SNITCH_ERROR') {
         showError(response.error);
-        await refreshStatus();
       } else if (response.type === 'SNITCH_ACCEPTED') {
-        observedPending = true;
-        await refreshStatus();
+        // SNITCH accepted; the project has entered OBSERVING. Let status drive UI.
       } else {
         showError('Unexpected response from background.');
       }
+      await refreshStatus();
     } catch (err) {
       showError(err instanceof Error ? err.message : 'Unknown error');
       await refreshStatus();
@@ -180,20 +188,22 @@ document.addEventListener('DOMContentLoaded', () => {
         showError(response.error);
       } else {
         stopPoll();
-        observedPending = false;
-        render('idle');
+        cachedReport = null;
+        // Cancel returns authoritative state to IDLE; the backend confirms it.
+        await refreshStatus();
       }
     } catch (err) {
       showError(err instanceof Error ? err.message : 'Unknown error');
+      await refreshStatus();
     } finally {
       cancelBtn.disabled = false;
     }
   });
 
   copyBtn.addEventListener('click', async () => {
-    copyBtn.disabled = true;
-    resultEl.textContent = 'Copying to clipboard…';
-    resultEl.className = 'result';
+    // Popup-local COPYING transition. No other CTA is actionable here, and the
+    // button shows progress until the release is confirmed.
+    render('copying');
 
     try {
       // Use the report pre-fetched into popup memory when the session completed.
@@ -209,9 +219,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!content) throw new Error('No response from background');
         if (content.type !== 'SNITCHSHOT_CONTENT') {
           throw new Error(
-            content.type === 'EVIDENCE_ERROR'
-              ? content.error
-              : 'Failed to read SNITCHSHOT',
+            content.type === 'EVIDENCE_ERROR' ? content.error : 'Failed to read SNITCHSHOT',
           );
         }
         report = content.report;
@@ -225,7 +233,7 @@ document.addEventListener('DOMContentLoaded', () => {
       writeTextViaDomCopy(report);
 
       // Only after the clipboard write succeeds does the private buffer clear.
-      // A confirmed clear is required before reporting success; the report must
+      // A confirmed clear is required before returning to IDLE; the report must
       // not be reported as released if the buffer is still authoritative.
       const cleared = await send({
         type: 'CLIPBOARD_RELEASED',
@@ -238,17 +246,17 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       cachedReport = null;
-      stopPoll();
-      observedPending = false;
+      // Release confirmed: return to authoritative IDLE.
       await refreshStatus();
-      stateEl.textContent = 'Copied ✓';
       resultEl.textContent = 'Report on clipboard. Now press Ctrl+V anywhere.';
       resultEl.className = 'result ok';
+      // A short confirmation may remain visible without creating a durable state.
+      snitchStateEl.textContent = 'Copied ✓';
     } catch (err) {
-      // Buffer is retained; stay in COPY so the user can retry.
+      // Buffer is retained; stay in the authoritative pending state so COPY can
+      // be retried. The background still reports snitchshot_pending.
+      await refreshStatus();
       showError(err instanceof Error ? err.message : 'Copy failed');
-    } finally {
-      copyBtn.disabled = false;
     }
   });
 

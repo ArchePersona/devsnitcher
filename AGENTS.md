@@ -11,8 +11,7 @@ devpeeper/        → Browser-observed (Chromium/CDP) + bounded probe observatio
 redaction/        → Sensitive data redaction (headers, cookies, tokens, URLs)
 report/           → Report builders (markdown, JSON) + clipboard writer
 extension/
-  content/        → Content script (bounded Chrome-mediated environment/DOM, cache refresh)
-  background/     → Service worker (Chromium observer, evidence assembly, cache, report)
+  background/     → Service worker (Chromium observer, evidence assembly, report)
   popup/          → SNITCH button UI
 ```
 
@@ -23,7 +22,7 @@ npm run build       # Bundle → dist/
 npm run dev         # Watch mode
 npm run typecheck   # TypeScript check
 npm run lint        # ESLint
-npm test            # Run automated tests (bounded probe, Chromium observation, redaction, report, encrypted cache)
+npm test            # Run automated tests (bounded probe, Chromium observation, redaction, report, CTA projection, pre-SNITCH invariant)
 ```
 
 ## Loading in Chrome

@@ -30,13 +30,10 @@ DEVSnitcher is designed around these constraints:
 - User decides where the report is pasted
 - Only the extension popup may initiate the privileged `SNITCH` action
 - Background explicitly refuses `SNITCH` messages that arrive with a tab sender
-- The private SNITCHSHOT buffer is stored in trusted, session-scoped extension storage; page JavaScript and content scripts cannot read or clear it
+- The private SNITCHSHOT buffer is stored in trusted, session-scoped extension context; page JavaScript cannot read or clear it
 - `COPY SNITCHSHOT` is popup-initiated, refused when relayed from a tab, and the buffer is cleared only after a confirmed successful system-clipboard write
-- Page JavaScript must not be able to invoke privileged extension actions through the content bridge
-- Cache-write evidence is shape-validated before encryption
-- Accepted rolling evidence is encrypted before it is written to extension session storage
-- The cache encryption key remains in trusted extension context
-- Per-tab cache records are cleared on tab close and navigation/load
+- There is no content bridge or page-facing forwarding path, so page-controlled `window.postMessage` traffic cannot invoke privileged extension actions
+- There is no pre-SNITCH evidence cache: nothing samples or stores evidence before an explicit `SNITCH` press
 - Environment/DOM observations are acquired through `chrome.scripting.executeScript` and carried back in Chrome's `InjectionResult`, not through a page-authored message
 - Chromium observations are acquired through `chrome.debugger` attached only to the SNITCH-selected tab and only for the live session (never before SNITCH, never on tab activation), with browser-issued provenance; the `debugger` permission is required for this browser-observed path
 - Browser-observed console, runtime-error and network evidence comes only from the trusted Chromium observer bound to the SNITCH-selected tab during the live session; no page-authored value supplies authoritative evidence
@@ -55,10 +52,9 @@ DEVSnitcher therefore treats page-controlled messages as untrusted input. Page J
 - initiate `SNITCH`
 - request screenshot capture
 - receive `SNITCH_RESULT`
-- use the content script as a proxy for privileged extension APIs
-- read the encrypted evidence cache through ordinary page JavaScript
-- obtain the cache encryption key
-- request arbitrary cache decryption
+- use extension code as a proxy for privileged extension APIs
+- read or clear the private SNITCHSHOT buffer
+- obtain the buffer content before **COPY SNITCHSHOT**
 
 The intended privileged path begins with an explicit user action in the extension popup.
 
@@ -70,38 +66,21 @@ The background service worker enforces the popup-only boundary directly. A `SNIT
 
 ---
 
-## Encrypted evidence cache
+## No pre-SNITCH evidence cache
 
-DEVSnitcher maintains a browser-session rolling evidence cache so the normal SNITCH path can use evidence accumulated before the click without asking the page for a new trusted answer at that moment.
+DEVSnitcher does not maintain a browser-session rolling evidence cache. Nothing observes via the debugger, runs a probe, or writes evidence to storage before an explicit **SNITCH** press — extension start, tab activation, navigation and popup-open never trigger acquisition. The context dump (environment/DOM/selection) and the Chromium/CDP observer are created only for the live session started by clicking **SNITCH**, and only on the selected tab.
 
-Accepted evidence reaches the background service worker through the extension runtime. Background validates its expected shape, then encrypts it with AES-256-GCM before writing the cache record to `chrome.storage.session`. Malformed cache-write payloads are rejected.
+Evidence is assembled in the background during the live session, redacted, and held only as the private SNITCHSHOT buffer (in trusted, session-scoped extension context) until **COPY SNITCHSHOT** writes it to the system clipboard and that write is confirmed. There is no `chrome.storage` evidence cache, so there is no key to exfiltrate and no plaintext evidence cache representation to protect. Malformed evidence continues to be shape-validated on receipt.
 
-Current cache protections include:
-
-- AES-256-GCM authenticated encryption
-- fresh random IV for each encryption operation
-- authenticated additional data bound to the tab cache identity
-- session-scoped generated encryption key
-- `chrome.storage.session` access restricted to `TRUSTED_CONTEXTS`
-- per-tab encrypted records
-- evidence-shape validation before storage and after decryption
-- URL mismatch rejection for stale page records
-- cache removal when a tab closes
-- cache clearing when a tab navigates or begins loading a new page
-
-Plaintext evidence is not intentionally persisted as the cache representation.
-
-The key is not sent to the page or content script.
-
-Modification of authenticated ciphertext or IV should cause decryption failure rather than silently yielding modified evidence. A cache record bound to a different tab must also fail authentication because the tab identity is part of AES-GCM authenticated additional data.
+The buffer is not the same thing as a cache: it exists only after an explicitly user-started session completes, is cleared after a confirmed clipboard write or a CANCEL, and is never refreshed on a timer.
 
 ---
 
-## What encryption does not prove
+## What acquisition does not prove
 
-The encrypted cache protects evidence **after DEVSnitcher accepts it for caching**.
+DEVSnitcher has no rolling evidence cache. The report is assembled in the trusted background only during an explicitly user-started SNITCH session and retained as the private SNITCHSHOT buffer until a confirmed clipboard write.
 
-It does not authenticate the original producer of all evidence inside page context.
+The acquisition path does not authenticate the original producer of all evidence inside page context.
 
 DEVSnitcher has three evidence sources with different authenticity properties:
 
@@ -119,7 +98,7 @@ This distinction matters:
 
 ```text
 Privileged-action authorization: protected by popup-only background enforcement.
-Stored-cache confidentiality/integrity: protected by extension-owned AES-GCM encryption and validation.
+Buffer confidentiality: private SNITCHSHOT held in trusted, session-scoped extension context until a confirmed clipboard write; no on-disk cache to protect.
 Browser-mediated transport authenticity: bounded probe return authenticated by Chrome's InjectionResult; Chromium console/runtime/network events via chrome.debugger (chrome-scripting / chrome-debugger).
 Page-evidence ingress authenticity: not applicable — the page-reporting bus has been removed; no evidence originates from a page-authored message.
 ```
@@ -142,7 +121,7 @@ Browser debugging evidence can contain secrets, including:
 
 DEVSnitcher performs best-effort redaction for obvious secrets such as authorization headers, bearer tokens, cookies, passwords, and API-key-like values. Users should still review reports before pasting them into an AI chat, issue tracker, or shared channel.
 
-Encryption of the local session cache does not replace redaction. Redaction still occurs before report output because the user may paste that output outside the browser.
+A private in-memory buffer does not replace redaction. Redaction still occurs before report output because the user may paste that output outside the browser.
 
 ---
 
@@ -172,15 +151,10 @@ Please report issues such as:
 - Extension access on browser-internal pages
 - The SNITCHSHOT buffer being cleared when the system clipboard write has not been confirmed, losing a pending report
 - A permission that is broader than needed
-- A content-script injection bug
 - A cross-origin evidence leak
 - Page-controlled or tab-relayed messages invoking privileged extension behavior
-- Plaintext evidence being persisted where the encrypted cache is expected
-- A page or content script gaining access to the cache key
-- Malformed cache evidence being accepted for storage
-- Tampered cache ciphertext or IV being accepted without authentication failure
-- One tab consuming another tab's cached evidence
-- Stale cache surviving navigation and being consumed for a different page
+- Evidence being sampled or stored before an explicit SNITCH press (a pre-SNITCH cache or rolling refresh creeping back in)
+- A page or content script gaining access to the private SNITCHSHOT buffer
 - Forged or untrusted page evidence being accepted as trusted extension output
 - The debugger being attached beyond the SNITCH-selected tab during a session, attached before any SNITCH press, or CDP driving privileged/execution behavior rather than passive observation
 - Page-visible state being mislabeled or promoted to browser-observed provenance by correlation
@@ -199,7 +173,7 @@ Use normal GitHub issues for regular bugs, UI polish, documentation fixes, or fe
 
 ## Evidence First. AI Second.
 
-DEVSnitcher is intentionally standalone: local browser evidence capture, encrypted browser-session cache, one user-triggered SNITCH report, no backend, no telemetry, no AI calls.
+DEVSnitcher is intentionally standalone: local browser evidence capture, one user-triggered SNITCH report held in a private buffer, no pre-SNITCH cache, no backend, no telemetry, no AI calls.
 
 For deeper evidence reconstruction, the same principle continues in **SHERLOCK**: files, conversations, timelines, source artifacts, provenance, and investigation reports.
 
