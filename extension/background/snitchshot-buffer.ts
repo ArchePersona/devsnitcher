@@ -57,15 +57,15 @@ export class SnitchshotBuffer {
   /**
    * Read the outstanding SNITCHSHOT, or null when the buffer is EMPTY. Reading
    * does not consume the record; only `clear` after a successful paste does.
+   *
+   * Storage READS are never collapsed into "EMPTY": a genuine read failure
+   * throws so the caller surfaces it as an error instead of falsely reporting
+   * an empty buffer (a private-buffer failure must not masquerade as absent).
    */
   async peek(): Promise<SnitchshotRecord | null> {
-    try {
-      const stored = await this.storage.get(SNITCHSHOT_BUFFER_KEY);
-      const record = stored[SNITCHSHOT_BUFFER_KEY];
-      return isSnitchshotRecord(record) ? record : null;
-    } catch {
-      return null;
-    }
+    const stored = await this.storage.get(SNITCHSHOT_BUFFER_KEY);
+    const record = stored[SNITCHSHOT_BUFFER_KEY];
+    return isSnitchshotRecord(record) ? record : null;
   }
 
   /**
@@ -84,14 +84,11 @@ export class SnitchshotBuffer {
   }
 
   /**
-   * Clear the buffer after a successful owned paste. Ignores storage errors so
-   * a storage hiccup does not break the paste consumer.
+   * Clear the buffer after a successful owned paste. This is the authoritative
+   * release; a failed removal throws so the caller does NOT send a false
+   * CLIPBOARD_CLEARED confirmation and the SNITCHSHOT stays occupied.
    */
   async clear(): Promise<void> {
-    try {
-      await this.storage.remove(SNITCHSHOT_BUFFER_KEY);
-    } catch {
-      // storage failures must not break the caller
-    }
+    await this.storage.remove(SNITCHSHOT_BUFFER_KEY);
   }
 }

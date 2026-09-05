@@ -25,18 +25,31 @@ const session = new SnitchSessionManager({
       evidence: redacted,
       userNotes: ctx.userNotes,
     });
-    console.log(`[snitch] report built ${reportMeta(report)}`);
+    // Boundary A — report built. Metadata-only fingerprint (length + hash).
+    console.log(`[snitch] report-built ${reportMeta(report)}`);
     try {
       await snitchshot.fill(report, ctx.tabId);
+      // Boundary B — report stored in the private buffer.
+      console.log(`[snitch] buffer-fill ${reportMeta(report)}`);
+    } catch (err) {
+      console.log(
+        `[snitch] buffer-fill FAILED: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    }
+    // Boundary C — the buffer accepts the report (retrieval check). A paced peek
+    // that throws is a genuine storage failure, surfaced as a failed session,
+    // never as an empty buffer.
+    try {
       const record = await snitchshot.peek();
-      if (record && record.report) {
-        console.log(`[snitch] buffer fill ok; retrieval ok ${reportMeta(record.report)}`);
+      if (record?.report) {
+        console.log(`[snitch] buffer-peek ${reportMeta(record.report)}`);
       } else {
-        console.log('[snitch] buffer fill ok; retrieval FAILED (buffer empty after fill)');
+        console.log('[snitch] buffer-peek FAILED (empty after fill)');
       }
     } catch (err) {
       console.log(
-        `[snitch] buffer fill FAILED: ${err instanceof Error ? err.message : String(err)}`,
+        `[snitch] buffer-peek FAILED: ${err instanceof Error ? err.message : String(err)}`,
       );
       throw err;
     }
@@ -127,17 +140,22 @@ chrome.runtime.onMessage.addListener(
       }
       void snitchshot
         .peek()
-        .then((record) =>
-          record
-            ? sendResponse({
-                type: 'SNITCHSHOT_CONTENT',
-                report: record.report,
-              } satisfies SnitchMessage)
-            : sendResponse({
-                type: 'EVIDENCE_ERROR',
-                error: 'No SNITCHSHOT is pending.',
-              } satisfies SnitchMessage),
-        )
+        .then((record) => {
+          if (record) {
+            // Boundary D — GET_SNITCHSHOT response. The popup receives the same
+            // report the buffer holds; fingerprint must match boundary A.
+            console.log(`[background] get-snitchshot ${reportMeta(record.report)}`);
+            sendResponse({
+              type: 'SNITCHSHOT_CONTENT',
+              report: record.report,
+            } satisfies SnitchMessage);
+          } else {
+            sendResponse({
+              type: 'EVIDENCE_ERROR',
+              error: 'No SNITCHSHOT is pending.',
+            } satisfies SnitchMessage);
+          }
+        })
         .catch((err) =>
           sendResponse({
             type: 'EVIDENCE_ERROR',
@@ -149,8 +167,10 @@ chrome.runtime.onMessage.addListener(
 
     if (msg?.type === 'CLIPBOARD_RELEASED') {
       // The popup has written the report to the ordinary OS clipboard and only
-      // now confirms success. The private buffer is authoritative until this
-      // confirmation; once cleared, normal Ctrl+V works anywhere.
+      // now confirms release. The private buffer is authoritative until this
+      // confirmation. Boundary I → J: CLIPBOARD_CLEARED is sent ONLY when the
+      // buffer is verified empty after removal; a failed/unconfirmed release
+      // keeps the SNITCHSHOT pending and surfaces an error instead.
       if (sender.tab) {
         sendResponse({
           type: 'EVIDENCE_ERROR',
@@ -158,15 +178,33 @@ chrome.runtime.onMessage.addListener(
         } satisfies SnitchMessage);
         return false;
       }
-      void snitchshot
-        .clear()
-        .then(() => sendResponse({ type: 'CLIPBOARD_CLEARED' } satisfies SnitchMessage))
-        .catch((err) =>
+      void (async () => {
+        console.log('[background] release-request');
+        try {
+          await snitchshot.clear();
+          const stillOccupied = await snitchshot.isOccupied();
+          if (stillOccupied) {
+            console.log('[background] buffer-clear FAILED (still occupied)');
+            sendResponse({
+              type: 'EVIDENCE_ERROR',
+              error: 'The private SNITCHSHOT could not be cleared; it is still pending.',
+            } satisfies SnitchMessage);
+            return;
+          }
+          console.log('[background] buffer-cleared');
+          sendResponse({ type: 'CLIPBOARD_CLEARED' } satisfies SnitchMessage);
+        } catch (err) {
+          console.log(
+            `[background] buffer-clear FAILED: ${err instanceof Error ? err.message : String(err)}`,
+          );
           sendResponse({
             type: 'EVIDENCE_ERROR',
-            error: String(err),
-          } satisfies SnitchMessage),
-        );
+            error: `The private SNITCHSHOT could not be cleared: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          } satisfies SnitchMessage);
+        }
+      })();
       return true;
     }
 

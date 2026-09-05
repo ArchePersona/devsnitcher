@@ -5,8 +5,8 @@ export interface ClipboardWriteInput {
 
 /**
  * Writes text to the ordinary system OS clipboard from the extension popup
- * document (a trusted, extension-controlled page), and only reports success
- * when a trustworthy OS write has actually completed.
+ * document (a trusted, extension-controlled page) within the user's explicit
+ * COPY SNITCHSHOT gesture.
  *
  * Chrome/Windows are unreliable with `navigator.clipboard.writeText`: it can
  * silently resolve without placing text on the OS clipboard, or reject with
@@ -17,10 +17,13 @@ export interface ClipboardWriteInput {
  *
  * Release authority:
  *
- *  - The ordinary text SNITCHSHOT copy path uses `writeTextViaDomCopy`, the
- *    deterministic `document.execCommand('copy')` path against a focused,
- *    selected offscreen textarea. `execCommand` returns a truthful boolean, so
- *    success is only reported when that operation returned `true`.
+ *  - The ordinary text SNITCHSHOT copy path uses `writeTextViaDomCopy` against
+ *    a focused, fully selected offscreen textarea. `document.execCommand` is
+ *    the synchronous, gesture-bound write available from a popup document; its
+ *    returned boolean is the strongest local signal this boundary can produce,
+ *    but only the live Windows paste (Ctrl+V) verifies the OS clipboard. The
+ *    private SNITCHSHOT stays authoritative until the background confirms the
+ *    buffer actually cleared.
  *  - The modern async Clipboard API is used only for the separate image/mixed-
  *    content path (`imageDataUrl`), never for the ordinary text CTA.
  *
@@ -45,7 +48,8 @@ export async function writeToClipboard(input: ClipboardWriteInput): Promise<void
 
   // Ordinary text release: the DOM copy path is the sole, authoritative
   // operation. A resolved navigator.clipboard.writeText() is NOT sufficient —
-  // only a confirmed execCommand('copy') result authorizes release.
+  // only a confirmed write authorizes release, confirmed later by the buffer
+  // clearing.
   writeTextViaDomCopy(text);
 }
 
@@ -62,35 +66,33 @@ async function writeImageAndText(input: ClipboardWriteInput): Promise<void> {
 }
 
 /**
- * Diagnostic build marker for this clipboard code path. Surfaced in the console
- * so a live test proves the loaded extension is executing this exact build
- * (`a769e19+diag`) rather than an unrelated/stale path. Diagnostic only.
- */
-const CLIPBOARD_BUILD = 'a769e19+diag';
-
-/**
- * Deterministic, safe fingerprint of the report: length, a hash and the first
- * characters. Used to prove the same text reaches each boundary without dumping
- * the full private report.
+ * Deterministic, metadata-only fingerprint of the report: length and a stable
+ * hash. Used to prove the same text reaches each boundary without ever dumping
+ * the private report contents.
  */
 export function fingerprint(text: string): string {
   let hash = 0;
   for (let i = 0; i < text.length; i++) {
     hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
   }
-  const head = text.slice(0, 80).replace(/[\r\n]+/g, '\\n');
-  return `len=${text.length} hash=${hash} head="${head}"`;
+  return `len=${text.length} hash=${hash}`;
 }
 
 /**
- * Writes `text` to the OS clipboard via `document.execCommand('copy')`.
- * Throws on failure — it never reports success unless execCommand returned true.
+ * Writes `text` to the OS clipboard via `document.execCommand('copy')` against
+ * a focused, fully selected offscreen textarea. Throws on failure — it never
+ * reports success unless execCommand returned true.
  *
- * Emits bounded console diagnostics (build marker, textarea value length,
- * selected length, whether the selected text matched the requested report, and
- * the raw execCommand result) so a live test can distinguish "correct report
- * reached the copy mechanism" from "wrong/empty text reached the copy
- * mechanism" and whether the browser wrote (true) or refused (false).
+ * Textarea selection is verified with the element's own selection model
+ * (`selectionStart`/`selectionEnd`); `document.getSelection()` does not
+ * describe a textarea's selection and can never prove the copied text.
+ *
+ * Emits bounded, metadata-only diagnostics (requested fingerprint, textarea
+ * length, element-selected range length, whether the selected range equals the
+ * requested report, and the raw execCommand result) so a live test can
+ * distinguish "correct report reached the copy mechanism" from "wrong/empty
+ * text reached the copy mechanism" and whether the browser wrote (true) or
+ * refused (false).
  */
 export function writeTextViaDomCopy(text: string): void {
   const doc = typeof document === 'undefined' ? null : document;
@@ -115,24 +117,27 @@ export function writeTextViaDomCopy(text: string): void {
   let selectedLen = 0;
   let selectedMatches = false;
   try {
+    console.log(`[clipboard] write-attempt ${fingerprint(text)}`);
     textarea.focus();
     textarea.select();
     textarea.setSelectionRange(0, text.length);
+    // The element selection model is the correct one for a textarea:
+    // document.getSelection() does not describe selection inside it.
     textareaLen = textarea.value.length;
-    selectedLen = (doc.getSelection()?.toString().length ?? 0);
-    selectedMatches =
-      typeof doc.getSelection?.() === 'function' &&
-      doc.getSelection()?.toString() === text;
+    const selStart = textarea.selectionStart;
+    const selEnd = textarea.selectionEnd;
+    selectedLen = selEnd - selStart;
+    selectedMatches = textarea.value.substring(selStart, selEnd) === text;
     succeeded = doc.execCommand('copy');
   } finally {
     textarea.remove();
   }
 
-  console.info(
-    `[DEVSnitcher:${CLIPBOARD_BUILD}] execCommand copy: ` +
-      `requested=${fingerprint(text)} ` +
+  console.log(
+    `[clipboard] write-result ` +
+      `result=${succeeded} ` +
       `textareaLen=${textareaLen} selectedLen=${selectedLen} ` +
-      `selectedMatch=${selectedMatches} result=${succeeded}`,
+      `selectedMatch=${selectedMatches}`,
   );
 
   if (!succeeded) {

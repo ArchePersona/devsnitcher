@@ -76,7 +76,8 @@ import {
 } from '../redaction/index';
 import { buildMarkdownReport } from '../report/markdown';
 import { buildJsonReport } from '../report/json';
-import { writeToClipboard, writeTextViaDomCopy } from '../report/clipboard';
+import { writeToClipboard, writeTextViaDomCopy, fingerprint } from '../report/clipboard';
+import { releaseReport, sendReleased } from '../extension/popup/release';
 import { ctaConfig } from '../extension/popup/cta-config';
 import { SnitchshotBuffer, SNITCHSHOT_BUFFER_KEY } from '../extension/background/snitchshot-buffer';
 import type { SnitchshotStorageLike } from '../extension/background/snitchshot-buffer';
@@ -1533,6 +1534,63 @@ describe('SNITCHSHOT private buffer lifecycle', () => {
     assert.equal(await buffer.isOccupied(), true);
     assert.equal((await buffer.peek())?.report, '# PERSIST');
   });
+
+  test('a failed buffer clear throws rather than masquerading as cleared', async () => {
+    const base = makeMemoryStorage();
+    const storage = {
+      ...base,
+      remove: async () => {
+        throw new Error('storage remove failed');
+      },
+    };
+    const buffer = makeBuffer(storage);
+    await buffer.fill('# AUTHENTIC', 5);
+
+    await assert.rejects(
+      buffer.clear(),
+      /storage remove failed/,
+      'a failed removal must surface so CLIPBOARD_CLEARED is never falsely sent',
+    );
+
+    // The SNITCHSHOT stays occupied and authoritative.
+    assert.equal((await buffer.peek())?.report, '# AUTHENTIC');
+    assert.equal(await buffer.isOccupied(), true);
+  });
+
+  test('a failed buffer read throws instead of masquerading as EMPTY', async () => {
+    const base = makeMemoryStorage();
+    const storage = {
+      ...base,
+      get: async () => {
+        throw new Error('storage read failed');
+      },
+    };
+    const buffer = makeBuffer(storage);
+
+    await assert.rejects(
+      buffer.peek(),
+      /storage read failed/,
+      'a storage failure must not be collapsed into an empty buffer',
+    );
+    await assert.rejects(buffer.isOccupied(), /storage read failed/);
+  });
+
+  test('a confirmed release clears the private buffer exactly once', async () => {
+    const storage = makeMemoryStorage();
+    let removeCalls = 0;
+    storage.remove = async (key: string) => {
+      removeCalls += 1;
+      storage.store.delete(key);
+    };
+    const buffer = makeBuffer(storage);
+    await buffer.fill('# RELEASE ONCE', 9);
+
+    await buffer.clear();
+
+    assert.equal(removeCalls, 1, 'release must clear the buffer exactly once');
+    assert.equal(storage.store.has(SNITCHSHOT_BUFFER_KEY), false);
+    assert.equal(await buffer.isOccupied(), false);
+  });
 });
 
 describe('bounded SNITCH session lifecycle', () => {
@@ -2003,6 +2061,106 @@ describe('SNITCHSHOT clipboard writer', () => {
     } finally {
       restoreExec();
     }
+  });
+
+  function makeMemoryStore(): SnitchshotStorageLike & { store: Map<string, unknown> } {
+    const store = new Map<string, unknown>();
+    return {
+      store,
+      get: async (key) => ({ [key]: store.get(key) }),
+      set: async (items) => {
+        for (const [k, v] of Object.entries(items)) store.set(k, v);
+      },
+      remove: async (key) => {
+        store.delete(key);
+      },
+    };
+  }
+
+  test('one report survives buffer → GET_SNITCHSHOT → COPY input unchanged', async () => {
+    const storage = makeMemoryStore();
+    const buffer = new SnitchshotBuffer(storage);
+    const report = '# DEVSNITCHER REPORT\nline two';
+    await buffer.fill(report, 7);
+
+    const restoreExec = installExecCommand(() => true);
+    let releaseRequested = false;
+    try {
+      // Boundary D — GET_SNITCHSHOT serves exactly what was filled (A/B/C).
+      const served = (await buffer.peek())?.report ?? null;
+      assert.equal(served, report);
+      assert.equal(fingerprint(served), fingerprint(report));
+
+      // Boundary F/G — the COPY release writes that very report to the copy
+      // mechanism, unmodified.
+      const outcome = await releaseReport(served, async () => {
+        releaseRequested = true;
+        return { ok: true };
+      });
+      assert.equal(outcome, 'released');
+
+      const written = capturedSelections();
+      assert.equal(written.length, 1);
+      assert.equal(written[0].selected, report, 'clipboard writer receives the same report');
+      assert.equal(fingerprint(written[0].selected), fingerprint(report));
+      assert.equal(releaseRequested, true, 'a successful write authorizes the release request');
+    } finally {
+      restoreExec();
+    }
+  });
+
+  test('clipboard writer failure sends no CLIPBOARD_RELEASED and keeps the SNITCHSHOT', async () => {
+    const storage = makeMemoryStore();
+    const buffer = new SnitchshotBuffer(storage);
+    await buffer.fill('# KEEP ME', 2);
+
+    const restoreExec = installExecCommand(() => false);
+    let releaseRequested = false;
+    try {
+      await assert.rejects(
+        releaseReport('# KEEP ME', async () => {
+          releaseRequested = true;
+          return { ok: true };
+        }),
+        /clipboard rejected/i,
+      );
+    } finally {
+      restoreExec();
+    }
+
+    assert.equal(releaseRequested, false, 'a failed write must not send CLIPBOARD_RELEASED');
+    assert.equal(await buffer.isOccupied(), true, 'the private SNITCHSHOT stays pending');
+    assert.equal((await buffer.peek())?.report, '# KEEP ME');
+  });
+
+  test('an unconfirmed buffer clear keeps the pending state instead of a false release', async () => {
+    const restoreExec = installExecCommand(() => true);
+    try {
+      const outcome = await releaseReport('report', async () => ({
+        ok: false,
+        error: 'Private SNITCHSHOT could not be cleared.',
+      }));
+      assert.equal(outcome, 'kept');
+    } finally {
+      restoreExec();
+    }
+  });
+
+  test('sendReleased maps only a confirmed CLIPBOARD_CLEARED to ok', async () => {
+    assert.deepEqual(await sendReleased(async () => ({ type: 'CLIPBOARD_CLEARED' })), { ok: true });
+
+    const err = await sendReleased(async () => ({ type: 'EVIDENCE_ERROR', error: 'nope' }));
+    assert.equal(err.ok, false);
+    if (!err.ok) assert.equal(err.error, 'nope');
+
+    const unknown = await sendReleased(async () => ({
+      type: 'SNITCH_ERROR',
+      error: 'other',
+    }));
+    assert.equal(unknown.ok, false);
+
+    const empty = await sendReleased(async () => undefined);
+    assert.equal(empty.ok, false);
   });
 });
 
