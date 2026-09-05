@@ -57,7 +57,7 @@ For DEVPEEPER-003 browser-observed console + runtime errors, focused verificatio
 - events from the wrong tab are rejected
 - console/error history is bounded (200 console, 50 errors) and cleared on detach
 - no page-authored `window.postMessage` value can supply console/jsErrors (background assembles console/jsErrors only from the SNITCH-session Chromium observer)
-- a surface with no entries completes once the harvest window elapses (empty is legitimate and complete), ending the session; a session never waits indefinitely for an error
+- an acquisition with no console/jsError/network events still completes legitimately with empty entries — those surfaces are prospective-only after debugger attachment and are never fabricated or waited on (no harvest window; the acquisition finishes when its reads finish)
 
 Keep this coverage proportional. Do not build a large mock framework solely to exercise browser APIs that are better proven manually.
 
@@ -200,7 +200,7 @@ This proof exercises the live debugger surface for the browser-observed network 
 3. Confirm successful 2xx/3xx requests do **not** appear in the report.
 4. From page JavaScript, attempt to post a `window.postMessage` whose `network` claims a different set of failed requests, then click **SNITCH**; confirm the report still uses the browser-observed network entries and no page-authored value is treated as evidence.
 5. Confirm there is no page-context network collector: no content entry is built (so nothing runs in the page/main-world to wrap ordinary page `fetch`/`XHR`), and the background bundle does not start `startNetworkCollector`.
-6. Confirm that if a session produces no network failures, it still completes after the harvest window — the session detaches and the report is produced rather than waiting indefinitely.
+6. Confirm that a session producing no network failures still completes immediately with empty `network` entries — network is prospective-only after debugger attachment, so empty is legitimate and not fabricated. The acquisition finishes when its reads finish (no harvest window); the session detaches and the report is produced.
 
 This proves failed-network evidence now arrives browser-observed through the SNITCH-session Chromium observer, preserved with provenance, bounded, and cannot be replaced by page-authored messages.
 

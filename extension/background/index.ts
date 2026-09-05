@@ -11,28 +11,46 @@ import {
 } from '../../devpeeper/observation';
 import type { DomContext, EnvironmentInfo, SnitchMessage, SnitchUiState } from '../../shared/types';
 
-// Bounded SNITCH session. DEVPEEPER attaches a debugger ONLY while a
-// user-initiated SNITCH session is live. There is no automatic active-tab
+// SNITCH acquisition session. DEVPEEPER attaches a debugger ONLY while a
+// user-initiated SNITCH acquisition is live. There is no automatic active-tab
 // attachment and no observation before SNITCH. At most one live session exists
 // globally; its source tab is immutable and tab activation is never authority.
 const session = new SnitchSessionManager({
   transport: () => chromeDebuggerTransport(),
   isSupported: isSupportedTabUrl,
   acquireBounded: probeBoundedObservation,
-  now: () => Date.now(),
-  scheduleTick: (cb, ms) => {
-    const id = window.setInterval(cb, ms);
-    return () => window.clearInterval(id);
-  },
   onComplete: async (evidence, ctx) => {
     const redacted = redactEvidence(evidence);
     const report = buildMarkdownReport({
       evidence: redacted,
       userNotes: ctx.userNotes,
     });
-    await snitchshot.fill(report, ctx.tabId);
+    console.log(`[snitch] report built ${reportMeta(report)}`);
+    try {
+      await snitchshot.fill(report, ctx.tabId);
+      const record = await snitchshot.peek();
+      if (record && record.report) {
+        console.log(`[snitch] buffer fill ok; retrieval ok ${reportMeta(record.report)}`);
+      } else {
+        console.log('[snitch] buffer fill ok; retrieval FAILED (buffer empty after fill)');
+      }
+    } catch (err) {
+      console.log(
+        `[snitch] buffer fill FAILED: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    }
   },
 });
+
+/** Metadata-only report fingerprint (length + hash). Never includes report contents. */
+function reportMeta(report: string): string {
+  let hash = 0;
+  for (let i = 0; i < report.length; i++) {
+    hash = ((hash << 5) - hash + report.charCodeAt(i)) | 0;
+  }
+  return `len=${report.length} hash=${hash}`;
+}
 
 chrome.storage.session
   .setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
@@ -208,13 +226,21 @@ chrome.runtime.onMessage.addListener(
           return;
         }
 
-        // The session observes and completes asynchronously on evidence
-        // completion; the popup polls GET_STATUS to follow it.
-        sendResponse({
-          type: 'SNITCH_ACCEPTED',
-          tabId: tab.id!,
-          windowId: tab.windowId,
-        } satisfies SnitchMessage);
+        // start() ran the full acquisition before resolving. Report the outcome
+        // from the resulting state: an occupied buffer means the SNITCHSHOT is
+        // actually pending and retrievable; otherwise surface the failure.
+        if (await snitchshot.isOccupied()) {
+          sendResponse({
+            type: 'SNITCH_ACCEPTED',
+            tabId: tab.id!,
+            windowId: tab.windowId,
+          } satisfies SnitchMessage);
+        } else {
+          sendResponse({
+            type: 'SNITCH_ERROR',
+            error: session.getLastError() ?? 'SNITCH acquisition produced no report.',
+          } satisfies SnitchMessage);
+        }
       } catch (err) {
         sendResponse({
           type: 'SNITCH_ERROR',

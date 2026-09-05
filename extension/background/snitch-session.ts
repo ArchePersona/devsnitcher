@@ -3,27 +3,31 @@ import { ChromiumObserver } from '../../devpeeper/chromium';
 import type { DebuggerTransport } from '../../devpeeper/debugger-transport';
 
 /**
- * DEVSnitcher bounded SNITCH session.
+ * DEVSnitcher SNITCH session — DevTools evidence snapshot on demand.
  *
- * DEVPEEPER does nothing until the user presses SNITCH. Pressing SNITCH starts
- * exactly one observation session bound to the tab selected at that moment.
+ * DEVPEEPER does nothing until the user presses SNITCH. Pressing SNITCH binds to
+ * the tab selected at that moment and acquires the diagnostic evidence DevTools
+ * has available for it, then builds the SNITCHSHOT. There is no observation
+ * window: acquisition finishes when the actual reads finish. `OBSERVING` means
+ * "SNITCH acquisition is actively executing", never "waiting for future browser
+ * events".
+ *
+ * Retrospective vs prospective CDP evidence:
+ *   - environment / dom / selection: SNAPSHOT-capable. Acquired at SNITCH time
+ *     by the bounded Chrome-mediated probe, reflecting the page's current state.
+ *   - console / jsErrors / network: PROSPECTIVE ONLY. The Runtime/Network CDP
+ *     domains do not replay history that occurred before the debugger attached;
+ *     these surfaces reflect only what Chrome emits after attachment. An empty
+ *     category therefore means "this API only observes events after
+ *     attachment" — DEVSnitcher never fabricates retrospective evidence.
+ *
  * The source tab is immutable: switching tabs never moves, restarts or
  * resurrects the session, and tab activation is never session authority.
- *
- * The session attaches a single Chromium observer (`chrome.debugger`), acquires
- * the bounded contextual fields (environment/DOM), then collects the
- * browser-observed console/runtime-error/network surfaces until each one is
- * complete. A surface is complete when it has produced qualifying evidence OR
- * the bounded harvest window has elapsed (an empty result is a legitimate
- * result; we never wait indefinitely for an error to occur). When every surface
- * is complete the session assembles the evidence, asks the coordinator to
- * redact/build/store the report, detaches the debugger, and becomes idle.
- *
- * Cancellation is terminal: it detaches the debugger, discards the unfinished
- * session and never resurrects it. There is at most one live session globally.
+ * Cancellation is terminal: it detaches the debugger and discards the unfinished
+ * acquisition. There is at most one live session globally.
  *
  * This module is deliberately free of `chrome.*` so the lifecycle can be tested
- * against injected collaborators (transport, clock, scheduler, evidence hooks).
+ * against injected collaborators (transport, bounded probe, evidence hooks).
  */
 export interface SnitchSessionContext {
   tabId: number;
@@ -45,44 +49,25 @@ export interface SnitchSessionDeps {
   isSupported: (url: string) => boolean;
   /** Acquires environment + DOM for the session tab (browser-observed bounded probe). */
   acquireBounded(tabId: number): Promise<SnitchBoundedContext>;
-  /** Monotonic-ish clock in ms used for the harvest window. */
-  now(): number;
-  /** Schedules the completion poll; returns a stop function. */
-  scheduleTick(cb: () => void, ms: number): () => void;
   /**
-   * Called once when the session's required evidence surfaces are complete with
-   * the fully assembled evidence. The coordinator redacts, builds the report and
-   * fills the private SNITCHSHOT buffer here. The debugger detaches afterward.
+   * Called once when the SNITCH acquisition is complete, with the assembled
+   * evidence. The coordinator redacts, builds the report and fills the private
+   * SNITCHSHOT buffer here. The debugger detaches afterward.
    */
   onComplete(evidence: Evidence, ctx: SnitchSessionContext): Promise<void>;
   /** Called on CANCEL / removal after the debugger detaches. Best-effort. */
   onCancel?(ctx: SnitchSessionContext): void | Promise<void>;
 }
 
-/** How long the session stays attached collecting browser-observed evidence. */
-export const HARVEST_WINDOW_MS = 6000;
-/** Cadence for the completion poll. */
-export const SESSION_POLL_MS = 300;
-
-interface Seen {
-  console: boolean;
-  jsErrors: boolean;
-  network: boolean;
-}
-
 export class SnitchSessionManager {
   private observer: ChromiumObserver | null = null;
   private ctx: SnitchSessionContext | null = null;
-  private startTime = 0;
-  private seen: Seen = { console: false, jsErrors: false, network: false };
   private bounded: SnitchBoundedContext | null = null;
-  private boundedComplete = false;
-  private stopPoll: (() => void) | null = null;
   private lastError: string | null = null;
 
   constructor(private readonly deps: SnitchSessionDeps) {}
 
-  /** True while a SNITCH observation session is live. */
+  /** True while a SNITCH acquisition is actively running. */
   isObserving(): boolean {
     return this.observer?.isRunning() ?? false;
   }
@@ -98,10 +83,12 @@ export class SnitchSessionManager {
   }
 
   /**
-   * Starts a SNITCH session on `ctx`'s tab. Resolves `true` when the session
-   * began observing; `false` when one is already live (global active gate).
-   * Throws when startup fails (e.g. unsupported tab or debugger attach error);
-   * the caller reports the error and returns to idle.
+   * Runs a SNITCH acquisition on `ctx`'s tab and finishes when the reads
+   * finish: attaches the single Chromium observer, snapshots the bounded page
+   * context, assembles the available evidence, then finalizes. Resolves `true`
+   * when the acquisition ran; `false` when one is already live (global active
+   * gate). Throws when startup fails (e.g. unsupported tab or debugger attach
+   * error); the caller reports the error and returns to idle.
    */
   async start(ctx: SnitchSessionContext): Promise<boolean> {
     if (this.isObserving()) return false;
@@ -113,46 +100,55 @@ export class SnitchSessionManager {
     await observer.start();
     this.observer = observer;
     this.ctx = ctx;
-    this.startTime = this.deps.now();
-    this.seen = { console: false, jsErrors: false, network: false };
     this.bounded = null;
-    this.boundedComplete = false;
     this.lastError = null;
 
-    // Acquire the bounded contextual fields for the session tab, browser-observed.
-    void this.deps
-      .acquireBounded(ctx.tabId)
-      .then((bounded) => {
-        this.bounded = bounded;
-        this.boundedComplete = true;
-      })
-      .catch(() => {
-        this.bounded = null;
-        this.boundedComplete = true;
-      });
+    // SNITCH-time acquisition: snapshot the current page context while the
+    // observer is attached, then finalize as soon as the reads complete. No
+    // six-second (or any) harvest wait; an empty console/jsErrors/network result
+    // is legitimate and complete.
+    try {
+      this.bounded = await this.deps.acquireBounded(ctx.tabId);
+    } catch {
+      this.bounded = null;
+    }
 
-    this.stopPoll = this.deps.scheduleTick(() => void this.tick(), SESSION_POLL_MS);
+    await this.complete();
     return true;
   }
 
   /**
+   * Runs finalization of the current session once acquisition reads are done.
+   * Public so deterministic tests can confirm completion is driven by the reads,
+   * not by a timer.
+   */
+  async complete(): Promise<void> {
+    const observer = this.observer;
+    if (!observer) return;
+    try {
+      await this.finalize(observer);
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err);
+      await this.teardown(observer).catch(() => undefined);
+    }
+  }
+
+  /**
    * Cancellation is terminal: detaches the debugger, discards the unfinished
-   * session and clears all live state. Resolves `true` when a live session was
-   * canceled, `false` when there was nothing to cancel.
+   * acquisition and clears all live state. Resolves `true` when a live session
+   * was canceled, `false` when there was nothing to cancel.
    */
   async cancel(): Promise<boolean> {
     const observer = this.observer;
     if (!observer) return false;
 
-    // Clear live state synchronously so no later tick/activation can resurrect it.
+    // Clear live state synchronously so no later activation can resurrect it.
     const ctx = this.ctx;
     this.observer = null;
     this.ctx = null;
-    if (this.stopPoll) this.stopPoll();
-    this.stopPoll = null;
 
     await observer.stop().catch(() => undefined);
-    this.resetSeen();
+    this.bounded = null;
     if (ctx && this.deps.onCancel) {
       await Promise.resolve(this.deps.onCancel(ctx)).catch(() => undefined);
     }
@@ -166,52 +162,25 @@ export class SnitchSessionManager {
     }
   }
 
-  /** Completion poll (driven by the scheduler; public for deterministic tests). */
-  async tick(): Promise<void> {
-    const observer = this.observer;
-    if (!observer) return;
-    if (this.seenChange(observer)) this.markSeen(observer);
-
-    const elapsed = this.deps.now() - this.startTime;
-    const windowElapsed = elapsed >= HARVEST_WINDOW_MS;
-    const allDevToolsDone = windowElapsed || (this.seen.console && this.seen.jsErrors && this.seen.network);
-
-    if (!this.boundedComplete || !allDevToolsDone) return;
-    await this.finalize(observer);
-  }
-
-  private seenChange(observer: ChromiumObserver): boolean {
-    return (
-      observer.getConsoleEntries().length > 0 ||
-      observer.getJsErrorEntries().length > 0 ||
-      observer.hasNetworkEntries()
-    );
-  }
-
-  private markSeen(observer: ChromiumObserver): void {
-    if (observer.getConsoleEntries().length > 0) this.seen.console = true;
-    if (observer.getJsErrorEntries().length > 0) this.seen.jsErrors = true;
-    if (observer.hasNetworkEntries()) this.seen.network = true;
-  }
-
   private async finalize(observer: ChromiumObserver): Promise<void> {
     const ctx = this.ctx;
-    if (!ctx) return;
-
-    if (this.stopPoll) this.stopPoll();
-    this.stopPoll = null;
+    if (!ctx) {
+      await this.teardown(observer);
+      return;
+    }
 
     const environment = this.bounded?.environment;
 
     if (!environment) {
-      // The bounded contextual fields failed to acquire; this cannot satisfy the
-      // report contract, so fail the session and detach without producing a report.
+      // The bounded page context failed to acquire; this cannot satisfy the
+      // report contract, so fail the session and detach without a report.
       this.lastError = 'DEVPEEPER could not acquire the bounded page context.';
-      return this.teardown(observer);
+      await this.teardown(observer);
+      return;
     }
 
     // Clear live state before the coordinator stores the report so a concurrent
-    // cancel/tick sees an idle manager and never resurrects a completing session.
+    // cancel sees an idle manager and never resurrects a completing session.
     this.observer = null;
     this.ctx = null;
 
@@ -224,14 +193,14 @@ export class SnitchSessionManager {
 
     // Always detach once the report has been attempted/stored; the debugger must
     // not remain attached after the session resolves, succeed or not.
-    return this.teardown(observer);
+    await this.teardown(observer);
   }
 
   private async teardown(observer: ChromiumObserver): Promise<void> {
     this.observer = null;
     this.ctx = null;
     await observer.stop().catch(() => undefined);
-    this.resetSeen();
+    this.bounded = null;
   }
 
   private async assembleEvidence(
@@ -251,12 +220,5 @@ export class SnitchSessionManager {
       dom,
       screenshot: ctx.screenshotInfo ?? null,
     };
-  }
-
-  private resetSeen(): void {
-    this.seen = { console: false, jsErrors: false, network: false };
-    this.bounded = null;
-    this.boundedComplete = false;
-    this.startTime = 0;
   }
 }

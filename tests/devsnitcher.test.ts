@@ -80,7 +80,7 @@ import { writeToClipboard, writeTextViaDomCopy } from '../report/clipboard';
 import { ctaConfig } from '../extension/popup/cta-config';
 import { SnitchshotBuffer, SNITCHSHOT_BUFFER_KEY } from '../extension/background/snitchshot-buffer';
 import type { SnitchshotStorageLike } from '../extension/background/snitchshot-buffer';
-import { SnitchSessionManager, HARVEST_WINDOW_MS } from '../extension/background/snitch-session';
+import { SnitchSessionManager } from '../extension/background/snitch-session';
 import type { SnitchSessionContext } from '../extension/background/snitch-session';
 import { snapshotProbe, type BoundedSnapshot } from '../devpeeper/snapshot-probe';
 import {
@@ -1570,12 +1570,6 @@ describe('bounded SNITCH session lifecycle', () => {
     onCancel?: (ctx: SnitchSessionContext) => void;
   }> = {}) {
     const transport = overrides.transport ?? makeSessionTransport();
-    const now = (() => {
-      let t = 0;
-      return { now: () => t, advance: (ms: number) => (t += ms) };
-    })();
-    const ticks: Array<() => void> = [];
-    const clock = now;
     const deps = {
       transport: () => transport,
       isSupported: (url: string) => !url.startsWith('chrome://'),
@@ -1592,14 +1586,6 @@ describe('bounded SNITCH session lifecycle', () => {
           },
           dom: null,
         })),
-      now: clock.now,
-      scheduleTick: (cb: () => void) => {
-        ticks.push(cb);
-        return () => {
-          const i = ticks.indexOf(cb);
-          if (i >= 0) ticks.splice(i, 1);
-        };
-      },
       onComplete:
         overrides.onComplete ??
         (async () => {
@@ -1608,7 +1594,7 @@ describe('bounded SNITCH session lifecycle', () => {
       ...(overrides.onCancel ? { onCancel: overrides.onCancel } : {}),
     };
     const session = new SnitchSessionManager(deps);
-    return { transport, deps, session, clock, ticks };
+    return { transport, deps, session };
   }
 
   function ctx(overrides: Partial<SnitchSessionContext> = {}): SnitchSessionContext {
@@ -1631,51 +1617,109 @@ describe('bounded SNITCH session lifecycle', () => {
     assert.equal(transport.detachCalls.length, 0);
   });
 
-  test('SNITCH attaches only the selected tab and does not follow later activation', async () => {
-    const { transport, session, ticks } = makeSessionDeps();
+  test('SNITCH attaches only the selected tab, acquires it, then detaches', async () => {
+    const { transport, session } = makeSessionDeps();
     await session.start(ctx({ tabId: 5, tabUrl: 'https://five.example' }));
 
-    assert.ok(session.isObserving());
-    assert.equal(session.attachedTabId(), 5);
     assert.equal(transport.attachCalls.length, 1);
     assert.deepEqual(transport.attachCalls[0], { tabId: 5 });
+    assert.equal(transport.attachCalls[0].tabId, 5, 'acquisition binds the tab selected at SNITCH time');
 
-    // Activating/observing a different tab must not move the session.
-    const snap = session.attachedTabId();
-    assert.equal(snap, 5, 'attached tab must be immutable across later activation');
-    assert.equal(ticks.length, 1, 'a poll is scheduled while observing');
-
-    await session.cancel();
+    // Acquisition is synchronous with the reads: once start() resolves the
+    // session has already completed and detached. No later activation can move
+    // or resurrect it.
     assert.equal(session.isObserving(), false);
-    assert.equal(transport.detachCalls.length, 1, 'cancel detaches the observer');
+    assert.equal(session.attachedTabId(), undefined);
+    assert.equal(transport.detachCalls.length, 1, 'completion detaches the observer');
+  });
+
+  test('SNITCH acquisition finishes when the reads finish — no harvest window', async () => {
+    // A manually-controlled bounded probe: completion is gated on the probe
+    // resolving, never on a six-second (or any) timer. The deps have no clock
+    // and no scheduler.
+    let resolveProbe!: () => void;
+    const probePromise = new Promise<void>((resolve) => {
+      resolveProbe = resolve;
+    });
+    let completed = false;
+    const { session } = makeSessionDeps({
+      acquireBounded: async () => {
+        await probePromise;
+        return {
+          environment: {
+            url: 'https://a.example',
+            title: 'A',
+            browser: 'Chrome',
+            platform: 'Test',
+            viewport: { width: 1280, height: 720 },
+            timestamp: 1,
+          },
+          dom: null,
+        };
+      },
+      onComplete: async () => {
+        completed = true;
+      },
+    });
+
+    let started = false;
+    const startPromise = session.start(ctx()).then(() => {
+      started = true;
+    });
+
+    // While the probe is still reading, acquisition is in flight and incomplete.
+    assert.equal(completed, false, 'acquisition waits on its reads, not a timer');
+    assert.equal(started, false);
+
+    resolveProbe();
+    await startPromise;
+
+    assert.equal(completed, true, 'finalizes as soon as the actual reads complete');
+    assert.ok(started);
   });
 
   test('required evidence completion produces the report and detaches', async () => {
     const captured: { evidence: Evidence | null } = { evidence: null };
-    const { transport, session, clock } = makeSessionDeps({
+    const { transport, session } = makeSessionDeps({
       onComplete: async (evidence) => {
         captured.evidence = evidence;
       },
     });
 
     await session.start(ctx());
-    assert.ok(session.isObserving());
 
-    // Bounded context + DevTools accumulate synchronously in the mock transport
-    // via the observer; advance past the window and pump the completion poll.
-    clock.advance(HARVEST_WINDOW_MS + 1);
-    await session.tick();
-
-    assert.ok(captured.evidence, 'a report must be produced once evidence completes');
+    assert.ok(captured.evidence, 'a report must be produced once acquisition completes');
     assert.equal(captured.evidence!.environment.url, 'https://a.example');
     assert.equal(session.isObserving(), false, 'session must detach after completion');
     assert.equal(transport.attachCalls.length, 1);
     assert.equal(transport.detachCalls.length, 1, 'completion must detach the debugger');
   });
 
+  test('an idle page still yields a snapshot report; empty prospective surfaces are legitimate', async () => {
+    // No console/jsError/network events are delivered to the mock transport:
+    // those surfaces are prospective-only after debugger attachment. The bounded
+    // probe snapshot (environment/dom) is the on-demand diagnostic state, and
+    // the empty prospective categories must NOT be fabricated or waited on.
+    const captured: { evidence: Evidence | null } = { evidence: null };
+    const { transport, session } = makeSessionDeps({
+      onComplete: async (evidence) => {
+        captured.evidence = evidence;
+      },
+    });
+
+    await session.start(ctx());
+
+    assert.ok(captured.evidence);
+    assert.equal(captured.evidence!.environment.url, 'https://a.example');
+    assert.deepEqual(captured.evidence!.console, [], 'console is prospective-only at SNITCH time');
+    assert.deepEqual(captured.evidence!.jsErrors, [], 'jsErrors are prospective-only at SNITCH time');
+    assert.deepEqual(captured.evidence!.network, [], 'network is prospective-only at SNITCH time');
+    assert.equal(transport.attachCalls.length, 1, 'attached exactly the one SNITCH tab');
+  });
+
   test('requested screenshot is carried into the completed evidence', async () => {
     const captured: { evidence: Evidence | null } = { evidence: null };
-    const { session, clock } = makeSessionDeps({
+    const { session } = makeSessionDeps({
       onComplete: async (evidence) => {
         captured.evidence = evidence;
       },
@@ -1688,18 +1732,41 @@ describe('bounded SNITCH session lifecycle', () => {
       }),
     );
 
-    clock.advance(HARVEST_WINDOW_MS + 1);
-    await session.tick();
-
-    assert.ok(captured.evidence, 'a report must be produced once evidence completes');
+    assert.ok(captured.evidence, 'a report must be produced once acquisition completes');
     assert.equal(captured.evidence!.screenshot?.dataUrl, 'data:image/png;base64,AAA');
     assert.equal(captured.evidence!.screenshot?.width, 1);
   });
 
-  test('CANCEL detaches and does not resurrect after switching tabs', async () => {
-    const { transport, session } = makeSessionDeps();
-    await session.start(ctx({ tabId: 3 }));
-    assert.ok(session.isObserving());
+  test('CANCEL terminates an in-progress acquisition and does not resurrect', async () => {
+    let resolveProbe!: () => void;
+    const probePromise = new Promise<void>((resolve) => {
+      resolveProbe = resolve;
+    });
+    let completed = false;
+    const { transport, session } = makeSessionDeps({
+      acquireBounded: async () => {
+        await probePromise;
+        return {
+          environment: {
+            url: 'https://a.example',
+            title: 'A',
+            browser: 'Chrome',
+            platform: 'Test',
+            viewport: { width: 1280, height: 720 },
+            timestamp: 1,
+          },
+          dom: null,
+        };
+      },
+      onComplete: async () => {
+        completed = true;
+      },
+    });
+
+    const startPromise = session.start(ctx({ tabId: 3 }));
+    // Let acquisition reach the pending probe so the observer is attached.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(session.isObserving(), true, 'acquisition is active while the probe reads');
 
     const canceled = await session.cancel();
     assert.equal(canceled, true);
@@ -1707,23 +1774,48 @@ describe('bounded SNITCH session lifecycle', () => {
     assert.equal(session.attachedTabId(), undefined);
     assert.equal(transport.detachCalls.length, 1, 'cancel must detach');
 
-    // Tab switching (no session authority) and a stale handleRemoved must not
-    // resurrect the terminated session.
-    await session.handleRemoved(3);
-    await session.cancel();
+    // Resolving the abandoned probe must not resurrect the terminated session
+    // or produce a report.
+    resolveProbe();
+    await startPromise;
+    assert.equal(completed, false, 'cancel must discard the unfinished acquisition');
     assert.equal(session.isObserving(), false);
-    assert.equal(session.attachedTabId(), undefined);
     assert.equal(transport.attachCalls.length, 1, 'no re-attach after terminal cancel');
     assert.equal(transport.detachCalls.length, 1);
   });
 
-  test('a second SNITCH while one session is live is refused', async () => {
-    const { transport, session } = makeSessionDeps();
-    await session.start(ctx({ tabId: 1 }));
+  test('a second SNITCH while one acquisition is live is refused', async () => {
+    let resolveProbe!: () => void;
+    const probePromise = new Promise<void>((resolve) => {
+      resolveProbe = resolve;
+    });
+    const { transport, session } = makeSessionDeps({
+      acquireBounded: async () => {
+        await probePromise;
+        return {
+          environment: {
+            url: 'https://a.example',
+            title: 'A',
+            browser: 'Chrome',
+            platform: 'Test',
+            viewport: { width: 1280, height: 720 },
+            timestamp: 1,
+          },
+          dom: null,
+        };
+      },
+    });
+
+    const first = session.start(ctx({ tabId: 1 }));
+    // Let the first acquisition reach the pending probe (observer attached)
+    // before the second SNITCH attempts to start.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const second = await session.start(ctx({ tabId: 2 }));
-    assert.equal(second, false, 'one live session is enforced globally');
+    assert.equal(second, false, 'one live acquisition is enforced globally');
     assert.equal(session.attachedTabId(), 1);
     assert.equal(transport.attachCalls.length, 1, 'no second observer attached');
+    resolveProbe();
+    await first;
   });
 
   test('closing the source tab terminates the session without migration', async () => {
